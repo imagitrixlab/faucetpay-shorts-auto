@@ -23,7 +23,7 @@ jobs:
 
       - name: Download & Verify Screen Recording from Google Drive
         run: |
-          gdown --fuzzy "https://drive.google.com/file/d/1BUP1ZmLy-28pLzWaekHo_EQbT6gtsjSN/view?usp=sharing" -O screen_record.mp4
+          gdown 1BUP1ZmLy-28pLzWaekHo_EQbT6gtsjSN -O screen_record.mp4 || curl -L "https://drive.usercontent.google.com/download?id=1BUP1ZmLy-28pLzWaekHo_EQbT6gtsjSN&export=download&confirm=t" -o screen_record.mp4
           test -s screen_record.mp4
           file -b --mime-type screen_record.mp4 | grep -q "^video/"
           ls -lh screen_record.mp4
