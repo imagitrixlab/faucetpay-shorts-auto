@@ -19,7 +19,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg fonts-dejavu-core file
-          pip install --upgrade gdown "moviepy==1.0.3" "pillow==9.5.0" opencv-python-headless "numpy<2.0"
+          pip install --upgrade gdown edge-tts gTTS "moviepy==1.0.3" "pillow==9.5.0" opencv-python-headless "numpy<2.0"
 
       - name: Download & Verify Screen Recording from Google Drive
         run: |
@@ -27,7 +27,6 @@ jobs:
           test -s screen_record.mp4
           file -b --mime-type screen_record.mp4 | grep -q "^video/"
           ls -lh screen_record.mp4
-          ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 screen_record.mp4
 
       - name: Generate 30s International Short
         run: python video_processor.py
