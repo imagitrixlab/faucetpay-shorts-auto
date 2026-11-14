@@ -1,0 +1,36 @@
+name: Render FaucetPay Masterpiece Short
+
+on:
+  workflow_dispatch:
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install FFmpeg, Fonts & Libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
+          pip install gdown "moviepy==1.0.3" "pillow==9.5.0" opencv-python-headless numpy
+
+      - name: Download Screen Recording from Google Drive
+        run: |
+          gdown --fuzzy "https://drive.google.com/file/d/1BUP1ZmLy-28pLzWaekHo_EQbT6gtsjSN/view?usp=sharing" -O screen_record.mp4
+          ls -lh screen_record.mp4
+
+      - name: Generate 30s Short
+        run: python video_processor.py
+
+      - name: Download Ready Video
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-faucetpay-shorts
+          path: final_faucetpay_shorts.mp4
