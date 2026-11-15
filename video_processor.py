@@ -15,22 +15,28 @@ from moviepy.editor import (
 )
 
 W, H = 1080, 1920
+VALID_MEDIA_EXTS = (".mp4", ".mp3", ".wav", ".m4a", ".aac", ".ogg", ".webm", ".mov")
 
 def find_asset(pattern, required=True, exclude_word=None):
-    """Finds assets across repo root, assets/ folder, or any subfolder safely."""
+    """Finds assets across repo root, assets/ folder, or any subfolder safely (ignores .bin/.onnx)."""
     search_paths = [
         pattern,
         os.path.join("assets", pattern),
         os.path.join("**", pattern),
     ]
-    ignored = ("final_faucetpay_shorts", "voice_clean", "voice_fitted", "bg_pulse")
+    ignored_prefixes = ("final_faucetpay_shorts", "voice_clean", "voice_fitted", "bg_pulse", "tts_")
+    ignored_exts = (".bin", ".onnx", ".py", ".yml", ".yaml", ".md", ".txt", ".json")
+
     for sp in search_paths:
         matches = []
         for m in glob.glob(sp, recursive=True):
             fname = os.path.basename(m)
-            if not os.path.isfile(m) or fname.startswith(ignored):
+            low = fname.lower()
+            if not os.path.isfile(m):
                 continue
-            if exclude_word and exclude_word in fname:
+            if low.startswith(ignored_prefixes) or low.endswith(ignored_exts):
+                continue
+            if exclude_word and exclude_word in low:
                 continue
             matches.append(m)
         if matches:
@@ -40,6 +46,34 @@ def find_asset(pattern, required=True, exclude_word=None):
         raise FileNotFoundError(f"❌ Required asset not found matching: {pattern}")
     print(f"⚠️ Optional asset skipped (not found): {pattern}")
     return None
+
+def find_user_voice_file():
+    """Finds the user's NotebookLM audio/video file in repo root regardless of its filename."""
+    excluded_exact = {"screen_record.mp4", "final_faucetpay_shorts.mp4"}
+    excluded_prefixes = ("final_faucetpay_shorts", "voice_clean", "voice_fitted", "bg_pulse", "tts_", "fp-")
+
+    root_media = []
+    for fname in sorted(os.listdir(".")):
+        if not os.path.isfile(fname):
+            continue
+        low = fname.lower()
+        if fname in excluded_exact or low.startswith(excluded_prefixes):
+            continue
+        if low.endswith(VALID_MEDIA_EXTS):
+            root_media.append(fname)
+
+    # Prioritize files named voice* or Stop_Losing*, otherwise take the user's uploaded root media file
+    for pref in ("voice", "stop_losing", "notebook"):
+        for f in root_media:
+            if f.lower().startswith(pref):
+                print(f"🎙️ Selected User Voice File -> {f}")
+                return f
+
+    if root_media:
+        print(f"🎙️ Selected User Voice File -> {root_media[0]}")
+        return root_media[0]
+
+    raise FileNotFoundError("❌ No user voice/audio file (.mp4/.mp3/.wav/.m4a) found in repository root!")
 
 def detect_mobile_viewport(video_path):
     """Detects the dark mobile viewport inside the laptop screen capture."""
@@ -119,7 +153,7 @@ ImageDraw.Draw(_mask_img).rounded_rectangle([0, 0, PHONE_W - 1, PHONE_H - 1], ra
 SCREEN_ALPHA = (np.array(_mask_img).astype(np.float32) / 255.0)[:, :, None]
 
 def prepare_crystal_phone_clip(raw_clip, start_t, end_t, crop_box, subtle_zoom=True):
-    """Crystal-clear Lanczos4 + Bilateral denoise + fine-radius unsharp mask inside a floating 3D phone."""
+    """Ultra-crystal Lanczos4 + micro-detail edge sharpening + OLED contrast inside a floating 3D phone."""
     safe_end = min(end_t, max(start_t + 0.5, raw_clip.duration - 0.05))
     sub = raw_clip.subclip(start_t, safe_end).set_fps(30)
     x1, y1, x2, y2 = crop_box
@@ -142,10 +176,13 @@ def prepare_crystal_phone_clip(raw_clip, start_t, end_t, crop_box, subtle_zoom=T
         if screen.shape[0] != PHONE_H or screen.shape[1] != PHONE_W:
             screen = cv2.resize(screen, (PHONE_W, PHONE_H), interpolation=cv2.INTER_LANCZOS4)
 
-        denoised = cv2.bilateralFilter(screen, d=3, sigmaColor=22, sigmaSpace=22)
-        blurred = cv2.GaussianBlur(denoised, (0, 0), sigmaX=0.85)
-        crisp = cv2.addWeighted(denoised, 1.65, blurred, -0.65, 0)
+        # Gentle edge-preserving denoise + fine-radius unsharp mask for razor-sharp text & numbers
+        denoised = cv2.bilateralFilter(screen, d=3, sigmaColor=15, sigmaSpace=15)
+        blurred = cv2.GaussianBlur(denoised, (0, 0), sigmaX=0.80)
+        crisp = cv2.addWeighted(denoised, 1.75, blurred, -0.75, 0)
+        crisp = cv2.convertScaleAbs(crisp, alpha=1.04, beta=2)
 
+        # Subtle diagonal glass sheen sweep across the screen
         sweep_x = int(((t / dur) * 1.4 - 0.2) * PHONE_W)
         if 0 <= sweep_x < PHONE_W:
             x_idx = np.arange(PHONE_W)[None, :]
@@ -331,7 +368,7 @@ def build_smooth_fintech_bed(duration=30.0):
 def build_masterpiece():
     print("🚀 Starting Ultra-Crystal 100/100 FaucetPay Short Render with NotebookLM Voice...")
     screen_path = find_asset("screen_record*", required=True)
-    voice_path = find_asset("voice*", required=True)
+    voice_path = find_user_voice_file()
 
     crop_box = detect_mobile_viewport(screen_path)
     print(f"📐 Detected Mobile Viewport Crop Box: {crop_box}")
@@ -442,14 +479,14 @@ def build_masterpiece():
     final_video = final_video.set_audio(final_audio)
 
     output_name = "final_faucetpay_shorts.mp4"
-    print(f"🎬 Exporting {output_name} (1080x1920, 30fps, 12Mbps Ultra-Crystal Master)...")
+    print(f"🎬 Exporting {output_name} (1080x1920, 30fps, 14Mbps Ultra-Crystal Master)...")
     final_video.write_videofile(
         output_name,
         fps=30,
         codec="libx264",
         audio_codec="aac",
         preset="slow",
-        bitrate="12000k",
+        bitrate="14000k",
         threads=4,
         ffmpeg_params=["-pix_fmt", "yuv420p", "-movflags", "+faststart"]
     )
