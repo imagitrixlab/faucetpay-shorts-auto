@@ -7,34 +7,29 @@ jobs:
   render:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.10
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Install FFmpeg, Fonts & Neural Voice Libraries
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-dejavu-core file
-          pip install --upgrade gdown kokoro-onnx soundfile edge-tts gTTS "moviepy==1.0.3" "pillow==9.5.0" opencv-python-headless "numpy<2.0"
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
 
-      - name: Download Neural Voice Model & Screen Recording
+      - name: Install Python libraries
         run: |
-          curl -fL "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx" -o kokoro-v1.0.onnx || true
-          curl -fL "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin" -o voices-v1.0.bin || true
-          gdown 1BUP1ZmLy-28pLzWaekHo_EQbT6gtsjSN -O screen_record.mp4 || curl -L "https://drive.usercontent.google.com/download?id=1BUP1ZmLy-28pLzWaekHo_EQbT6gtsjSN&export=download&confirm=t" -o screen_record.mp4
-          test -s screen_record.mp4
-          file -b --mime-type screen_record.mp4 | grep -q "^video/"
-          ls -lh screen_record.mp4
+          pip install --upgrade pip
+          pip install moviepy==1.0.3 opencv-python-headless Pillow numpy gdown
 
-      - name: Generate 30s International Short
+      - name: Run FaucetPay Masterpiece Processor
         run: python video_processor.py
 
       - name: Upload Final Video Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: final-faucetpay-shorts
+          name: final_faucetpay_shorts
           path: final_faucetpay_shorts.mp4
