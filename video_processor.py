@@ -174,13 +174,12 @@ def build_studio_base_and_mask():
 BASE_STAGE_RGB, BEZEL_RGB, BEZEL_ALPHA, SCREEN_ALPHA = build_studio_base_and_mask()
 
 def load_alpha_webm_clip(webm_path, prefix, target_w, target_h, target_dur):
-    """Decodes VP9 alpha .webm overlay cleanly into a transparent MoviePy clip."""
+    """Decodes VP9 alpha .webm overlay cleanly into a transparent MoviePy 1.0.3 clip via .to_mask()."""
     if not webm_path or not os.path.exists(webm_path):
         return None
     rgb_out = f"alpha_{prefix}_rgb.mp4"
     msk_out = f"alpha_{prefix}_msk.mp4"
 
-    # Probe source duration
     cap = cv2.VideoCapture(webm_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     fc = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 90.0
@@ -200,7 +199,7 @@ def load_alpha_webm_clip(webm_path, prefix, target_w, target_h, target_dur):
     ], check=True)
 
     c_clip = VideoFileClip(rgb_out).without_audio().set_fps(30).set_duration(target_dur)
-    m_clip = VideoFileClip(msk_out, ismask=True).set_fps(30).set_duration(target_dur)
+    m_clip = VideoFileClip(msk_out).without_audio().to_mask().set_fps(30).set_duration(target_dur)
     return c_clip.set_mask(m_clip)
 
 def make_greenscreen_sticker(mp4_path, size_px, start_t, duration, pos):
@@ -211,8 +210,7 @@ def make_greenscreen_sticker(mp4_path, size_px, start_t, duration, pos):
     src_dur = max(0.5, raw.duration)
 
     def key_rgb(get_frame, t):
-        frame = get_frame(t % src_dur)
-        return frame
+        return get_frame(t % src_dur)
 
     def key_mask(get_frame, t):
         frame = get_frame(t % src_dur)
@@ -325,7 +323,6 @@ def build_animated_stream_card(stream_webm_path, logo_path, prefix, duration, is
     elif logo_path and os.path.exists(logo_path):
         card_layers.append(ImageClip(logo_path).resize(width=620).set_duration(duration).set_position(("center", 680)))
 
-    # Crisp bottom tutorial subtitle pill on intro/outro
     pill_w, pill_h = 900, 128
     p_img = Image.new("RGBA", (pill_w, pill_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(p_img)
@@ -514,7 +511,6 @@ def build_masterpiece():
 
     layers = [base_timeline]
 
-    # Official FaucetPay Watermark throughout tutorial
     if logo_dark:
         layers.append(
             ImageClip(logo_dark)
