@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-# আপনার নতুন Google Drive ওপেন লিংকটি এখানে সেট করা আছে:
+# আপনার Google Drive ওপেন লিংকটি এখানে সেট করা আছে:
 GDRIVE_SCREEN_LINK = "https://drive.google.com/file/d/1-2TCd-DvSQ2UZHViuINtPJkhc6SCAI5W/view?usp=sharing"
 
 # Pillow 10+ compatibility fix for MoviePy 1.0.3
@@ -26,7 +26,7 @@ VALID_MEDIA_EXTS = VALID_AUDIO_EXTS + (".mp4", ".webm", ".mov")
 def find_asset(pattern, required=True, exclude_word=None):
     """Finds assets across repo root or assets/ folder safely (ignores .bin/.onnx)."""
     search_paths = [pattern, os.path.join("assets", pattern), os.path.join("**", pattern)]
-    ignored_prefixes = ("final_faucetpay_shorts", "voice_clean", "voice_human", "bg_pulse", "room_air", "tts_")
+    ignored_prefixes = ("final_faucetpay_shorts", "voice_clean", "voice_human", "bg_pulse", "room_air", "tts_", "seg_")
     ignored_exts = (".bin", ".onnx", ".py", ".yml", ".yaml", ".md", ".txt", ".json")
 
     for sp in search_paths:
@@ -47,10 +47,10 @@ def find_asset(pattern, required=True, exclude_word=None):
     return None
 
 def get_screen_recording():
-    """Downloads the new screen recording from Google Drive open link cleanly."""
+    """Downloads the screen recording from Google Drive open link cleanly."""
     link = GDRIVE_SCREEN_LINK.strip()
     if link.startswith("http"):
-        print("☁️ Downloading new screen recording from Google Drive open link...")
+        print("☁️ Downloading screen recording from Google Drive open link...")
         subprocess.run([sys.executable, "-m", "pip", "install", "-q", "gdown"], check=False)
 
         match = re.search(r"/d/([a-zA-Z0-9_-]+)", link) or re.search(r"id=([a-zA-Z0-9_-]+)", link)
@@ -72,7 +72,7 @@ def get_screen_recording():
             )
 
         if os.path.exists("screen_record.mp4") and os.path.getsize("screen_record.mp4") > 5000000:
-            print("✅ New Screen Recording Downloaded Successfully -> screen_record.mp4")
+            print("✅ Screen Recording Ready -> screen_record.mp4")
             return "screen_record.mp4"
         raise RuntimeError("❌ Google Drive download failed or file too small!")
 
@@ -87,7 +87,7 @@ def find_user_voice_file(screen_path):
     screen_base = os.path.basename(screen_path).lower()
     excluded_prefixes = (
         "final_faucetpay_shorts", "voice_clean", "voice_human", "bg_pulse",
-        "room_air", "tts_", "fp-", "60317", "screen_record", "screen_recording"
+        "room_air", "tts_", "fp-", "60317", "screen_record", "screen_recording", "seg_"
     )
 
     audio_candidates = []
@@ -120,22 +120,25 @@ def find_user_voice_file(screen_path):
 
     raise FileNotFoundError("❌ No user voice/audio file found! Upload your .wav audio file to GitHub.")
 
-def detect_mobile_viewport(video_path):
-    """Detects native portrait mobile capture cleanly."""
+def get_video_info(video_path):
+    """Gets dimensions, clean crop box, and duration via OpenCV (avoids VFR seek lag)."""
     cap = cv2.VideoCapture(video_path)
     ret, frame = cap.read()
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
     cap.release()
+    raw_dur = (frame_count / fps) if (fps > 0 and frame_count > 0) else 83.0
     if not ret:
-        return (0, 80, 1080, 2280)
+        return (0, 80, 1080, 2280), raw_dur
 
     fh, fw, _ = frame.shape
     if fh > fw:
         y1 = int(fh * 0.042)
         y2 = int(fh * 0.962)
-        print(f"📱 Native Portrait Capture Detected ({fw}x{fh}) -> Clean UI Crop (0, {y1}, {fw}, {y2})")
-        return (0, y1, fw, y2)
+        print(f"📱 Native Portrait Capture ({fw}x{fh}, {raw_dur:.1f}s) -> Crop (0, {y1}, {fw}, {y2})")
+        return (0, y1, fw, y2), raw_dur
 
-    return (int(fw * 0.406), int(fh * 0.190), int(fw * 0.594), int(fh * 0.943))
+    return (int(fw * 0.406), int(fh * 0.190), int(fw * 0.594), int(fh * 0.943)), raw_dur
 
 # Enlarged Crystal Viewport: Phone at y=75..1445, Captions at y=1472..1685
 PHONE_W, PHONE_H = 724, 1370
@@ -174,46 +177,55 @@ _mask_img = Image.new("L", (PHONE_W, PHONE_H), 0)
 ImageDraw.Draw(_mask_img).rounded_rectangle([0, 0, PHONE_W - 1, PHONE_H - 1], radius=34, fill=255)
 SCREEN_ALPHA = (np.array(_mask_img).astype(np.float32) / 255.0)[:, :, None]
 
-def prepare_crystal_phone_clip(raw_clip, start_t, end_t, crop_box, target_dur=None, subtle_zoom=True):
-    """Lanczos4 scaling + micro-edge sharpening + OLED contrast on real user footage."""
-    safe_start = min(start_t, max(0.0, raw_clip.duration - 1.0))
-    safe_end = min(end_t, max(safe_start + 0.5, raw_clip.duration - 0.05))
-    sub = raw_clip.subclip(safe_start, safe_end)
-    if target_dur and abs(sub.duration - target_dur) > 0.08:
-        sub = sub.fx(lambda c: c.speedx(final_duration=target_dur))
-    sub = sub.set_fps(30)
+def prepare_crystal_phone_clip(screen_path, seg_idx, start_t, end_t, raw_dur, crop_box, target_dur):
+    """Pre-trims & converts each segment to 30fps CFR via native FFmpeg so rendering takes ~90 seconds."""
+    safe_start = min(start_t, max(0.0, raw_dur - 1.0))
+    safe_end = min(end_t, max(safe_start + 0.5, raw_dur - 0.05))
+    src_dur = max(0.5, safe_end - safe_start)
+    pts_factor = target_dur / src_dur
 
     x1, y1, x2, y2 = crop_box
-    dur = max(sub.duration, 0.1)
+    cw = max(2, (x2 - x1) // 2 * 2)
+    ch = max(2, (y2 - y1) // 2 * 2)
 
-    def render_crystal_frame(get_frame, t):
-        frame = get_frame(t)
-        cropped = frame[y1:y2, x1:x2]
-        ch, cw = cropped.shape[:2]
+    seg_file = f"seg_{seg_idx}.mp4"
+    vf = (
+        f"setpts={pts_factor:.6f}*PTS,"
+        f"fps=30,"
+        f"crop={cw}:{ch}:{x1}:{y1},"
+        f"scale={PHONE_W}:{PHONE_H}:flags=lanczos,"
+        f"unsharp=3:3:0.45:3:3:0.0,"
+        f"eq=contrast=1.03:brightness=0.01"
+    )
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-ss", f"{safe_start:.3f}",
+        "-t", f"{src_dur:.3f}",
+        "-i", screen_path,
+        "-vf", vf,
+        "-t", f"{target_dur:.3f}",
+        "-r", "30",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "15",
+        "-pix_fmt", "yuv420p",
+        "-an",
+        seg_file
+    ], check=True)
 
-        scale_base = max(PHONE_W / max(cw, 1), PHONE_H / max(ch, 1))
-        zoom_factor = 1.0 + (0.022 * min(max(t / dur, 0.0), 1.0) if subtle_zoom else 0.0)
-        nw = int(cw * scale_base * zoom_factor)
-        nh = int(ch * scale_base * zoom_factor)
-        upscaled = cv2.resize(cropped, (nw, nh), interpolation=cv2.INTER_LANCZOS4)
+    sub = VideoFileClip(seg_file).without_audio().set_fps(30)
 
-        cx0 = max(0, (nw - PHONE_W) // 2)
-        cy0 = max(0, (nh - PHONE_H) // 2)
-        screen = upscaled[cy0:cy0 + PHONE_H, cx0:cx0 + PHONE_W]
+    def composite_on_stage(get_frame, t):
+        screen = get_frame(t)
         if screen.shape[0] != PHONE_H or screen.shape[1] != PHONE_W:
             screen = cv2.resize(screen, (PHONE_W, PHONE_H), interpolation=cv2.INTER_LANCZOS4)
-
-        blurred = cv2.GaussianBlur(screen, (0, 0), sigmaX=0.75)
-        crisp = cv2.addWeighted(screen, 1.55, blurred, -0.55, 0)
-        crisp = cv2.convertScaleAbs(crisp, alpha=1.03, beta=2)
-
         canvas = STUDIO_BG.copy()
         roi = canvas[PHONE_Y:PHONE_Y + PHONE_H, PHONE_X:PHONE_X + PHONE_W].astype(np.float32)
-        blended = crisp.astype(np.float32) * SCREEN_ALPHA + roi * (1.0 - SCREEN_ALPHA)
+        blended = screen.astype(np.float32) * SCREEN_ALPHA + roi * (1.0 - SCREEN_ALPHA)
         canvas[PHONE_Y:PHONE_Y + PHONE_H, PHONE_X:PHONE_X + PHONE_W] = blended.astype(np.uint8)
         return canvas
 
-    return sub.fl(render_crystal_frame)
+    return sub.fl(composite_on_stage).set_duration(target_dur)
 
 def build_official_logo_card(logo_path, duration, is_outro=False):
     """Creates a 100% original animated card using FaucetPay's official PNG logo (0% stock video hash)."""
@@ -321,11 +333,7 @@ def make_top_progress_bar(total_duration):
     return VideoClip(make_frame, duration=total_duration).set_fps(30).set_position((0, 0))
 
 def humanize_voice_for_review(voice_path):
-    """
-    Preserves natural 1.00x pacing and adds:
-    1. Warm smartphone/collar mic EQ & subtle room reflection
-    2. Continuous natural indoor room tone (-38dB) so there is zero digital dead-silence between pauses
-    """
+    """Adds warm smartphone mic EQ, room reflection, and continuous indoor room tone (-38dB)."""
     raw_wav = "voice_clean.wav"
     human_wav = "voice_human.wav"
 
@@ -383,22 +391,22 @@ def build_masterpiece():
 
     voice = humanize_voice_for_review(voice_path)
     total_dur = max(53.0, round(voice.duration + 2.8, 2))
-    print(f"⏱️ Final Video Duration Locked to {total_dur:.2f}s (100% Audio Preserved)")
+    print(f"⏱️ Final Video Duration Locked to {total_dur:.2f}s")
 
-    crop_box = detect_mobile_viewport(screen_path)
-    raw_screen = VideoFileClip(screen_path).without_audio()
+    crop_box, raw_dur = get_video_info(screen_path)
 
     intro_dur = 1.5
     outro_dur = 2.5
     body_dur = total_dur - intro_dur - outro_dur
 
+    print("⚡ Pre-trimming 6 CFR 30fps crystal segments via FFmpeg...")
     c_intro = build_official_logo_card(logo_dark_path, intro_dur, is_outro=False)
-    c_wallet = prepare_crystal_phone_clip(raw_screen, 0.0, 6.0, crop_box, target_dur=body_dur * 0.16, subtle_zoom=True)
-    c_withdraw = prepare_crystal_phone_clip(raw_screen, 6.0, 10.2, crop_box, target_dur=body_dur * 0.12, subtle_zoom=True)
-    c_swap_setup = prepare_crystal_phone_clip(raw_screen, 34.0, 49.2, crop_box, target_dur=body_dur * 0.26, subtle_zoom=True)
-    c_swap_done = prepare_crystal_phone_clip(raw_screen, 49.5, 54.5, crop_box, target_dur=body_dur * 0.14, subtle_zoom=True)
-    c_faucets = prepare_crystal_phone_clip(raw_screen, 62.0, 68.5, crop_box, target_dur=body_dur * 0.16, subtle_zoom=True)
-    c_ptc = prepare_crystal_phone_clip(raw_screen, 74.0, 82.5, crop_box, target_dur=body_dur * 0.16, subtle_zoom=True)
+    c_wallet = prepare_crystal_phone_clip(screen_path, 1, 0.0, 6.0, raw_dur, crop_box, body_dur * 0.16)
+    c_withdraw = prepare_crystal_phone_clip(screen_path, 2, 6.0, 10.2, raw_dur, crop_box, body_dur * 0.12)
+    c_swap_setup = prepare_crystal_phone_clip(screen_path, 3, 34.0, 49.2, raw_dur, crop_box, body_dur * 0.26)
+    c_swap_done = prepare_crystal_phone_clip(screen_path, 4, 49.5, 54.5, raw_dur, crop_box, body_dur * 0.14)
+    c_faucets = prepare_crystal_phone_clip(screen_path, 5, 62.0, 68.5, raw_dur, crop_box, body_dur * 0.16)
+    c_ptc = prepare_crystal_phone_clip(screen_path, 6, 74.0, 82.5, raw_dur, crop_box, body_dur * 0.16)
     c_outro = build_official_logo_card(logo_dark_path, outro_dur, is_outro=True)
 
     base_timeline = concatenate_videoclips(
@@ -453,15 +461,15 @@ def build_masterpiece():
     final_video = final_video.set_audio(final_audio)
 
     output_name = "final_faucetpay_shorts.mp4"
-    print(f"🎬 Exporting {output_name} ({total_dur:.2f}s Full Review, 1080x1920, 14Mbps)...")
+    print(f"🎬 Exporting {output_name} ({total_dur:.2f}s Full Review, 1080x1920, 12Mbps)...")
     final_video.write_videofile(
         output_name,
         fps=30,
         codec="libx264",
         audio_codec="aac",
-        preset="slow",
-        bitrate="14000k",
-        threads=4,
+        preset="medium",
+        bitrate="12000k",
+        threads=2,
         ffmpeg_params=["-pix_fmt", "yuv420p", "-movflags", "+faststart"]
     )
     print("✨ High-Score (85+) FaucetPay Review Short Rendered Successfully!")
