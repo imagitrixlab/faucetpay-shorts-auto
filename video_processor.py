@@ -1,6 +1,5 @@
 import os
 import glob
-import asyncio
 import subprocess
 import cv2
 import numpy as np
@@ -17,14 +16,6 @@ from moviepy.editor import (
 
 W, H = 1080, 1920
 
-COMMERCIAL_SCRIPT = (
-    "Stop losing your crypto to crazy gas fees! "
-    "With FaucetPay, you can collect free crypto daily from verified faucets and quick ads. "
-    "Hold over 20 different coins in one micro-wallet, "
-    "and instantly swap USDT to Litecoin with zero external fees. "
-    "Skip the gas fees and grow your crypto portfolio safely! Join FaucetPay free using the link in the description!"
-)
-
 def find_asset(pattern, required=True, exclude_word=None):
     """Finds assets across repo root, assets/ folder, or any subfolder safely."""
     search_paths = [
@@ -32,7 +23,7 @@ def find_asset(pattern, required=True, exclude_word=None):
         os.path.join("assets", pattern),
         os.path.join("**", pattern),
     ]
-    ignored = ("final_faucetpay_shorts", "voice_clean", "voice_fitted", "bg_pulse", "tts_raw", "tts_norm")
+    ignored = ("final_faucetpay_shorts", "voice_clean", "voice_fitted", "bg_pulse")
     for sp in search_paths:
         matches = []
         for m in glob.glob(sp, recursive=True):
@@ -292,107 +283,22 @@ def make_punch_caption(line1, line2, start_t, duration, highlight_second=True):
     base_clip = ImageClip(np.array(img)).set_start(start_t).set_duration(duration)
     return base_clip.set_position(lambda t: (35, int(1468 + max(0.0, (0.12 - t) / 0.12) * 22)))
 
-def generate_happy_commercial_voice():
-    """Generates a natural, normal-paced (1.00x), happy American female voice across the full 30s timeline."""
-    raw_wav = "tts_raw.wav"
-    raw_mp3 = "tts_raw.mp3"
-    source_voice = None
-    engine_used = None
-
-    # Tier 1: Local Neural Studio Voice (Kokoro af_heart at 1.00x exact natural human speed)
-    if (os.path.exists("kokoro-v1.0.onnx") and os.path.getsize("kokoro-v1.0.onnx") > 10_000_000 and
-            os.path.exists("voices-v1.0.bin") and os.path.getsize("voices-v1.0.bin") > 100_000):
-        try:
-            from kokoro_onnx import Kokoro
-            import soundfile as sf
-            kokoro = Kokoro("kokoro-v1.0.onnx", "voices-v1.0.bin")
-            samples, sr = kokoro.create(
-                COMMERCIAL_SCRIPT,
-                voice="af_heart",
-                speed=1.00,
-                lang="en-us"
-            )
-            sf.write(raw_wav, samples, sr)
-            if os.path.exists(raw_wav) and os.path.getsize(raw_wav) > 10000:
-                print("🎙️ Generated natural 1.00x happy Kokoro Neural (af_heart) voiceover!")
-                source_voice = raw_wav
-                engine_used = "kokoro"
-        except Exception as e:
-            print(f"⚠️ Kokoro notice ({e}), checking fallback...")
-
-    # Tier 2: Microsoft Neural Backup at 1.00x (+0%) normal speed
-    if not engine_used:
-        for voice_id in ("en-US-AriaNeural", "en-US-JennyNeural"):
-            try:
-                import edge_tts
-                async def _synth():
-                    comm = edge_tts.Communicate(COMMERCIAL_SCRIPT, voice=voice_id, rate="+0%", pitch="+2Hz")
-                    await comm.save(raw_mp3)
-                asyncio.run(_synth())
-                if os.path.exists(raw_mp3) and os.path.getsize(raw_mp3) > 5000:
-                    print(f"🎙️ Generated normal-paced {voice_id} voiceover!")
-                    source_voice = raw_mp3
-                    engine_used = "neural"
-                    break
-            except Exception as e:
-                print(f"⚠️ {voice_id} skipped ({e})")
-
-    # Tier 3: Offline-Safe gTTS Fallback at 1.00x normal speed
-    if not engine_used:
-        try:
-            from gtts import gTTS
-            gTTS(text=COMMERCIAL_SCRIPT, lang="en", tld="com").save(raw_mp3)
-            if os.path.exists(raw_mp3) and os.path.getsize(raw_mp3) > 5000:
-                print("🎙️ Generated normal-paced gTTS voiceover!")
-                source_voice = raw_mp3
-                engine_used = "gtts"
-        except Exception as e:
-            print(f"⚠️ gTTS notice ({e})")
-
-    if not source_voice:
-        source_voice = find_asset("voice*", required=True)
-
-    norm_wav = "tts_norm.wav"
-    subprocess.run([
-        "ffmpeg", "-y", "-i", source_voice,
-        "-vn", "-ac", "2", "-ar", "44100", norm_wav
-    ], check=True)
-
+def prepare_notebooklm_voice(voice_path, max_spoken_seconds=29.2):
+    """Uses the user's exact NotebookLM voice at 1.00x natural speed without clipping any ending syllable."""
     clean_wav = "voice_clean.wav"
-    if engine_used == "gtts":
-        af_chain = (
-            "asetrate=44100*1.03,aresample=44100,"
-            "highpass=f=85,equalizer=f=3200:t=q:w=1.2:g=3.5,treble=g=4:f=7500,"
-            "acompressor=threshold=-18dB:ratio=3.0:attack=8:release=120,alimiter=limit=0.94"
-        )
-    else:
-        af_chain = (
-            "highpass=f=80,equalizer=f=3000:t=q:w=1.2:g=2.8,treble=g=3.2:f=8000,"
-            "acompressor=threshold=-18dB:ratio=2.8:attack=8:release=120,alimiter=limit=0.94"
-        )
-
     subprocess.run([
-        "ffmpeg", "-y", "-i", norm_wav,
-        "-af", af_chain,
+        "ffmpeg", "-y", "-i", voice_path,
+        "-vn", "-ac", "2", "-ar", "44100",
+        "-af", "highpass=f=80,equalizer=f=3000:t=q:w=1.2:g=2.2,acompressor=threshold=-18dB:ratio=2.5:attack=10:release=140,alimiter=limit=0.94",
         clean_wav
     ], check=True)
 
     voice_clip = AudioFileClip(clean_wav)
-    print(f"🎙️ Natural 1.00x spoken duration: {voice_clip.duration:.2f}s")
+    print(f"🎙️ NotebookLM natural voice duration: {voice_clip.duration:.2f}s")
 
-    # Allows full 28.8s across the 30s timeline so she speaks completely unhurried and naturally!
-    max_target = 28.8
-    if voice_clip.duration > max_target:
-        tempo = min(voice_clip.duration / max_target, 1.15)
-        fitted_wav = "voice_fitted.wav"
-        print(f"⚡ Gentle {tempo:.3f}x fit so final word finishes cleanly before 30s...")
-        subprocess.run([
-            "ffmpeg", "-y", "-i", clean_wav,
-            "-filter:a", f"atempo={tempo:.4f}",
-            fitted_wav
-        ], check=True)
-        voice_clip.close()
-        voice_clip = AudioFileClip(fitted_wav)
+    # Trims only the silent NotebookLM end-card after 29.2s; spoken audio finishes at ~27.6s so 100% is preserved
+    if voice_clip.duration > max_spoken_seconds:
+        voice_clip = voice_clip.subclip(0, max_spoken_seconds).audio_fadeout(0.30)
 
     return voice_clip
 
@@ -406,13 +312,13 @@ def build_smooth_fintech_bed(duration=30.0):
             "-f", "lavfi", "-i", f"sine=frequency=196.00:sample_rate=44100:duration={duration}",
             "-f", "lavfi", "-i", f"sine=frequency=261.63:sample_rate=44100:duration={duration}",
             "-filter_complex",
-            "[0:a]tremolo=f=2.0:d=0.45,lowpass=f=320,volume=0.11[a0];"
-            "[1:a]tremolo=f=4.0:d=0.50,lowpass=f=420,volume=0.06[a1];"
-            "[2:a]tremolo=f=1.0:d=0.35,lowpass=f=520,volume=0.04[a2];"
+            "[0:a]tremolo=f=2.0:d=0.45,lowpass=f=320,volume=0.10[a0];"
+            "[1:a]tremolo=f=4.0:d=0.50,lowpass=f=420,volume=0.055[a1];"
+            "[2:a]tremolo=f=1.0:d=0.35,lowpass=f=520,volume=0.035[a2];"
             "[a0][a1][a2]amix=inputs=3:duration=first,afade=t=in:st=0:d=0.6,afade=t=out:st=27.5:d=2.5",
             bed_wav
         ], check=True)
-        return AudioFileClip(bed_wav).volumex(0.32)
+        return AudioFileClip(bed_wav).volumex(0.30)
     except Exception:
         subprocess.run([
             "ffmpeg", "-y", "-f", "lavfi",
@@ -423,8 +329,9 @@ def build_smooth_fintech_bed(duration=30.0):
         return AudioFileClip(bed_wav).volumex(0.28)
 
 def build_masterpiece():
-    print("🚀 Starting Natural-Paced Happy-Voiced 100/100 FaucetPay Short Render...")
+    print("🚀 Starting Ultra-Crystal 100/100 FaucetPay Short Render with NotebookLM Voice...")
     screen_path = find_asset("screen_record*", required=True)
+    voice_path = find_asset("voice*", required=True)
 
     crop_box = detect_mobile_viewport(screen_path)
     print(f"📐 Detected Mobile Viewport Crop Box: {crop_box}")
@@ -497,13 +404,13 @@ def build_masterpiece():
 
     layers.append(make_swap_confirmed_badge(19.0, 4.2))
 
-    # 3. 100% Rules-Safe Commercial Captions
+    # 3. 100% Rules-Safe Commercial Captions synced to your new script
     captions = [
-        ("STOP LOSING CRYPTO TO GAS FEES", "FAUCETPAY FIXES THIS INSTANTLY", 0.30, 4.05),
-        ("STEP 1: COLLECT FREE CRYPTO", "VERIFIED FAUCETS & QUICK ADS", 4.55, 5.7),
-        ("STEP 2: STORE EVERYTHING", "HOLD 20+ COINS IN ONE WALLET", 10.55, 5.7),
-        ("STEP 3: LIVE INSTANT SWAP", "USDT → LTC WITH ZERO FEES", 16.55, 6.7),
-        ("GROW YOUR PORTFOLIO SAFELY", "JOIN FAUCETPAY FREE — LINK BELOW", 23.45, 2.75),
+        ("STOP LOSING CRYPTO TO GAS FEES", "FAUCETPAY FIXES THIS INSTANTLY", 0.30, 4.1),
+        ("STEP 1: MICRO-PAYOUTS", "VERIFIED FAUCETS & QUICK PTC", 4.60, 5.7),
+        ("STEP 2: ONE CLEAN DASHBOARD", "HOLD 20+ COINS IN ONE WALLET", 10.60, 5.7),
+        ("STEP 3: LIVE INSTANT SWAP", "USDT → LTC WITH ZERO FEES", 16.60, 6.7),
+        ("SIMPLIFY YOUR MICRO-WALLET", "CHECK OFFICIAL LINK IN DESCRIPTION", 23.50, 2.7),
     ]
     for l1, l2, st, dur in captions:
         layers.append(make_punch_caption(l1, l2, st, dur))
@@ -513,10 +420,10 @@ def build_masterpiece():
 
     final_video = CompositeVideoClip(layers, size=(W, H)).set_duration(30.0)
 
-    # 5. Natural-Paced Commercial Studio Audio Mix
+    # 5. Natural Studio Audio Mix (1.00x NotebookLM Voice + Smooth Bed + Official SFX)
     audio_tracks = []
-    voice = generate_happy_commercial_voice()
-    audio_tracks.append(voice.set_start(0.30).volumex(1.26))
+    voice = prepare_notebooklm_voice(voice_path, max_spoken_seconds=29.2)
+    audio_tracks.append(voice.set_start(0.15).volumex(1.24))
     audio_tracks.append(build_smooth_fintech_bed(30.0))
 
     sonic_path = find_asset("fp-audio-sonic-logo*", required=False)
@@ -546,7 +453,7 @@ def build_masterpiece():
         threads=4,
         ffmpeg_params=["-pix_fmt", "yuv420p", "-movflags", "+faststart"]
     )
-    print("✨ Natural-Paced Ultra-Crystal 100/100 Short Rendered Successfully!")
+    print("✨ Ultra-Crystal 100/100 Short Rendered Successfully!")
 
 if __name__ == "__main__":
     build_masterpiece()
