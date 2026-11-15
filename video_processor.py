@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import glob
 import subprocess
@@ -46,15 +47,30 @@ def find_asset(pattern, required=True, exclude_word=None):
     return None
 
 def get_screen_recording():
-    """Downloads the new screen recording from Google Drive open link."""
+    """Downloads the new screen recording from Google Drive open link cleanly."""
     link = GDRIVE_SCREEN_LINK.strip()
     if link.startswith("http"):
         print("☁️ Downloading new screen recording from Google Drive open link...")
         subprocess.run([sys.executable, "-m", "pip", "install", "-q", "gdown"], check=False)
-        subprocess.run(
-            [sys.executable, "-m", "gdown", "--fuzzy", link, "-O", "screen_record.mp4"],
-            check=True
-        )
+
+        match = re.search(r"/d/([a-zA-Z0-9_-]+)", link) or re.search(r"id=([a-zA-Z0-9_-]+)", link)
+        if match:
+            file_id = match.group(1)
+            subprocess.run(
+                [sys.executable, "-m", "gdown", f"https://drive.google.com/uc?id={file_id}", "-O", "screen_record.mp4"],
+                check=False
+            )
+            if not (os.path.exists("screen_record.mp4") and os.path.getsize("screen_record.mp4") > 5000000):
+                subprocess.run(
+                    [sys.executable, "-m", "gdown", file_id, "-O", "screen_record.mp4"],
+                    check=True
+                )
+        else:
+            subprocess.run(
+                [sys.executable, "-m", "gdown", link, "-O", "screen_record.mp4"],
+                check=True
+            )
+
         if os.path.exists("screen_record.mp4") and os.path.getsize("screen_record.mp4") > 5000000:
             print("✅ New Screen Recording Downloaded Successfully -> screen_record.mp4")
             return "screen_record.mp4"
