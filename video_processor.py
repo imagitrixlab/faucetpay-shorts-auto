@@ -1,9 +1,13 @@
 import os
+import sys
 import glob
 import subprocess
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+
+# আপনার নতুন Google Drive ওপেন লিংকটি এখানে সেট করা আছে:
+GDRIVE_SCREEN_LINK = "https://drive.google.com/file/d/1-2TCd-DvSQ2UZHViuINtPJkhc6SCAI5W/view?usp=sharing"
 
 # Pillow 10+ compatibility fix for MoviePy 1.0.3
 if not hasattr(Image, 'ANTIALIAS'):
@@ -15,16 +19,13 @@ from moviepy.editor import (
 )
 
 W, H = 1080, 1920
-VALID_MEDIA_EXTS = (".mp4", ".mp3", ".wav", ".m4a", ".aac", ".ogg", ".webm", ".mov")
+VALID_AUDIO_EXTS = (".wav", ".mp3", ".m4a", ".aac", ".ogg", ".flac")
+VALID_MEDIA_EXTS = VALID_AUDIO_EXTS + (".mp4", ".webm", ".mov")
 
 def find_asset(pattern, required=True, exclude_word=None):
-    """Finds assets across repo root, assets/ folder, or any subfolder safely (ignores .bin/.onnx)."""
-    search_paths = [
-        pattern,
-        os.path.join("assets", pattern),
-        os.path.join("**", pattern),
-    ]
-    ignored_prefixes = ("final_faucetpay_shorts", "voice_clean", "voice_fitted", "bg_pulse", "tts_")
+    """Finds assets across repo root or assets/ folder safely (ignores .bin/.onnx)."""
+    search_paths = [pattern, os.path.join("assets", pattern), os.path.join("**", pattern)]
+    ignored_prefixes = ("final_faucetpay_shorts", "voice_clean", "voice_human", "bg_pulse", "room_air", "tts_")
     ignored_exts = (".bin", ".onnx", ".py", ".yml", ".yaml", ".md", ".txt", ".json")
 
     for sp in search_paths:
@@ -32,9 +33,7 @@ def find_asset(pattern, required=True, exclude_word=None):
         for m in glob.glob(sp, recursive=True):
             fname = os.path.basename(m)
             low = fname.lower()
-            if not os.path.isfile(m):
-                continue
-            if low.startswith(ignored_prefixes) or low.endswith(ignored_exts):
+            if not os.path.isfile(m) or low.startswith(ignored_prefixes) or low.endswith(ignored_exts):
                 continue
             if exclude_word and exclude_word in low:
                 continue
@@ -44,105 +43,112 @@ def find_asset(pattern, required=True, exclude_word=None):
             return matches[0]
     if required:
         raise FileNotFoundError(f"❌ Required asset not found matching: {pattern}")
-    print(f"⚠️ Optional asset skipped (not found): {pattern}")
     return None
 
-def find_user_voice_file():
-    """Finds the user's NotebookLM audio/video file in repo root regardless of its filename."""
-    excluded_exact = {"screen_record.mp4", "final_faucetpay_shorts.mp4"}
-    excluded_prefixes = ("final_faucetpay_shorts", "voice_clean", "voice_fitted", "bg_pulse", "tts_", "fp-")
+def get_screen_recording():
+    """Downloads the new screen recording from Google Drive open link."""
+    link = GDRIVE_SCREEN_LINK.strip()
+    if link.startswith("http"):
+        print("☁️ Downloading new screen recording from Google Drive open link...")
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "gdown"], check=False)
+        subprocess.run(
+            [sys.executable, "-m", "gdown", "--fuzzy", link, "-O", "screen_record.mp4"],
+            check=True
+        )
+        if os.path.exists("screen_record.mp4") and os.path.getsize("screen_record.mp4") > 5000000:
+            print("✅ New Screen Recording Downloaded Successfully -> screen_record.mp4")
+            return "screen_record.mp4"
+        raise RuntimeError("❌ Google Drive download failed or file too small!")
 
-    root_media = []
-    for fname in sorted(os.listdir(".")):
-        if not os.path.isfile(fname):
+    for pat in ("screen_record*", "Screen_Recording*", "60317*"):
+        found = find_asset(pat, required=False)
+        if found:
+            return found
+    raise FileNotFoundError("❌ Screen recording not found!")
+
+def find_user_voice_file(screen_path):
+    """Automatically selects the user's uploaded voice audio file in root or assets/."""
+    screen_base = os.path.basename(screen_path).lower()
+    excluded_prefixes = (
+        "final_faucetpay_shorts", "voice_clean", "voice_human", "bg_pulse",
+        "room_air", "tts_", "fp-", "60317", "screen_record", "screen_recording"
+    )
+
+    audio_candidates = []
+    media_candidates = []
+    for folder in (".", "assets"):
+        if not os.path.isdir(folder):
             continue
-        low = fname.lower()
-        if fname in excluded_exact or low.startswith(excluded_prefixes):
-            continue
-        if low.endswith(VALID_MEDIA_EXTS):
-            root_media.append(fname)
+        for fname in os.listdir(folder):
+            fpath = os.path.join(folder, fname)
+            if not os.path.isfile(fpath):
+                continue
+            low = fname.lower()
+            if low == screen_base or low.startswith(excluded_prefixes):
+                continue
+            if low.endswith(VALID_AUDIO_EXTS):
+                audio_candidates.append((os.path.getmtime(fpath), fpath))
+            elif low.endswith(VALID_MEDIA_EXTS):
+                media_candidates.append((os.path.getmtime(fpath), fpath))
 
-    # Prioritize files named voice* or Stop_Losing*, otherwise take the user's uploaded root media file
-    for pref in ("voice", "stop_losing", "notebook"):
-        for f in root_media:
-            if f.lower().startswith(pref):
-                print(f"🎙️ Selected User Voice File -> {f}")
-                return f
+    if audio_candidates:
+        audio_candidates.sort(reverse=True)
+        chosen = audio_candidates[0][1]
+        print(f"🎙️ Selected User Voice Audio -> {chosen}")
+        return chosen
+    if media_candidates:
+        media_candidates.sort(reverse=True)
+        chosen = media_candidates[0][1]
+        print(f"🎙️ Selected User Voice Media -> {chosen}")
+        return chosen
 
-    if root_media:
-        print(f"🎙️ Selected User Voice File -> {root_media[0]}")
-        return root_media[0]
-
-    raise FileNotFoundError("❌ No user voice/audio file (.mp4/.mp3/.wav/.m4a) found in repository root!")
+    raise FileNotFoundError("❌ No user voice/audio file found! Upload your .wav audio file to GitHub.")
 
 def detect_mobile_viewport(video_path):
-    """Detects the dark mobile viewport inside the laptop screen capture."""
+    """Detects native portrait mobile capture cleanly."""
     cap = cv2.VideoCapture(video_path)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
-    boxes = []
-    for ratio in (0.01, 0.15, 0.40):
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(total_frames * ratio))
-        ret, frame = cap.read()
-        if not ret:
-            continue
-        fh, fw, _ = frame.shape
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        dark_mask = (gray < 65).astype(np.uint8)
-        dark_mask[:, :int(fw * 0.30)] = 0
-        dark_mask[:, int(fw * 0.70):] = 0
-        dark_mask[:int(fh * 0.14), :] = 0
-        dark_mask[int(fh * 0.96):, :] = 0
-
-        contours, _ = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if contours:
-            largest = max(contours, key=cv2.contourArea)
-            x, y, w, h = cv2.boundingRect(largest)
-            if w > 200 and h > 400:
-                boxes.append((x + 3, y + 3, x + w - 3, y + h - 3))
+    ret, frame = cap.read()
     cap.release()
-    if boxes:
-        med = np.median(np.array(boxes), axis=0).astype(int)
-        return tuple(int(v) for v in med)
-    return (int(1920 * 0.406), int(1032 * 0.190), int(1920 * 0.594), int(1032 * 0.943))
+    if not ret:
+        return (0, 80, 1080, 2280)
 
-# Dual Safe-Zone Layout: Phone at y=85..1435, Captions at y=1468..1683
-PHONE_W, PHONE_H = 710, 1350
-PHONE_X = (W - PHONE_W) // 2   # 185
-PHONE_Y = 85
+    fh, fw, _ = frame.shape
+    if fh > fw:
+        y1 = int(fh * 0.042)
+        y2 = int(fh * 0.962)
+        print(f"📱 Native Portrait Capture Detected ({fw}x{fh}) -> Clean UI Crop (0, {y1}, {fw}, {y2})")
+        return (0, y1, fw, y2)
+
+    return (int(fw * 0.406), int(fh * 0.190), int(fw * 0.594), int(fh * 0.943))
+
+# Enlarged Crystal Viewport: Phone at y=75..1445, Captions at y=1472..1685
+PHONE_W, PHONE_H = 724, 1370
+PHONE_X = (W - PHONE_W) // 2
+PHONE_Y = 75
 
 def build_studio_stage():
-    """Creates a luxury studio fintech stage with 3D drop shadow and glowing titanium phone bezel."""
+    """Builds a dark navy FaucetPay-branded studio stage with a titanium bezel."""
     y_grid, x_grid = np.mgrid[0:H, 0:W].astype(np.float32)
     bg = np.zeros((H, W, 3), dtype=np.float32)
-    bg[:, :, 0] = 5 + (y_grid / H) * 7
-    bg[:, :, 1] = 10 + (y_grid / H) * 13
-    bg[:, :, 2] = 24 + (y_grid / H) * 26
+    bg[:, :, 0] = 6 + (y_grid / H) * 8
+    bg[:, :, 1] = 12 + (y_grid / H) * 14
+    bg[:, :, 2] = 28 + (y_grid / H) * 28
 
-    dist_top = np.sqrt(((x_grid - W * 0.5) / 500.0) ** 2 + ((y_grid - 160.0) / 380.0) ** 2)
-    glow1 = np.exp(-dist_top ** 2) * 42.0
+    dist_top = np.sqrt(((x_grid - W * 0.5) / 520.0) ** 2 + ((y_grid - 160.0) / 380.0) ** 2)
+    glow1 = np.exp(-dist_top ** 2) * 44.0
     bg[:, :, 1] += glow1 * 0.75
     bg[:, :, 2] += glow1 * 1.15
-
-    dist_bot = np.sqrt(((x_grid - W * 0.5) / 540.0) ** 2 + ((y_grid - 1580.0) / 260.0) ** 2)
-    glow2 = np.exp(-dist_bot ** 2) * 28.0
-    bg[:, :, 0] += glow2 * 0.25
-    bg[:, :, 1] += glow2 * 0.65
-    bg[:, :, 2] += glow2 * 1.05
 
     pil_bg = Image.fromarray(np.clip(bg, 0, 255).astype(np.uint8)).convert("RGBA")
     draw = ImageDraw.Draw(pil_bg)
 
     draw.rounded_rectangle(
-        [PHONE_X - 18, PHONE_Y - 14, PHONE_X + PHONE_W + 18, PHONE_Y + PHONE_H + 20],
-        radius=50, fill=(2, 5, 12, 185)
+        [PHONE_X - 16, PHONE_Y - 14, PHONE_X + PHONE_W + 16, PHONE_Y + PHONE_H + 18],
+        radius=48, fill=(2, 5, 12, 195)
     )
     draw.rounded_rectangle(
-        [PHONE_X - 8, PHONE_Y - 8, PHONE_X + PHONE_W + 8, PHONE_Y + PHONE_H + 8],
-        radius=42, outline=(0, 215, 255, 220), width=4
-    )
-    draw.rounded_rectangle(
-        [PHONE_X - 3, PHONE_Y - 3, PHONE_X + PHONE_W + 3, PHONE_Y + PHONE_H + 3],
-        radius=38, outline=(255, 255, 255, 90), width=2
+        [PHONE_X - 7, PHONE_Y - 7, PHONE_X + PHONE_W + 7, PHONE_Y + PHONE_H + 7],
+        radius=40, outline=(0, 215, 255, 230), width=4
     )
     return np.array(pil_bg.convert("RGB"))
 
@@ -152,10 +158,15 @@ _mask_img = Image.new("L", (PHONE_W, PHONE_H), 0)
 ImageDraw.Draw(_mask_img).rounded_rectangle([0, 0, PHONE_W - 1, PHONE_H - 1], radius=34, fill=255)
 SCREEN_ALPHA = (np.array(_mask_img).astype(np.float32) / 255.0)[:, :, None]
 
-def prepare_crystal_phone_clip(raw_clip, start_t, end_t, crop_box, subtle_zoom=True):
-    """Ultra-crystal Lanczos4 + micro-detail edge sharpening + OLED contrast inside a floating 3D phone."""
-    safe_end = min(end_t, max(start_t + 0.5, raw_clip.duration - 0.05))
-    sub = raw_clip.subclip(start_t, safe_end).set_fps(30)
+def prepare_crystal_phone_clip(raw_clip, start_t, end_t, crop_box, target_dur=None, subtle_zoom=True):
+    """Lanczos4 scaling + micro-edge sharpening + OLED contrast on real user footage."""
+    safe_start = min(start_t, max(0.0, raw_clip.duration - 1.0))
+    safe_end = min(end_t, max(safe_start + 0.5, raw_clip.duration - 0.05))
+    sub = raw_clip.subclip(safe_start, safe_end)
+    if target_dur and abs(sub.duration - target_dur) > 0.08:
+        sub = sub.fx(lambda c: c.speedx(final_duration=target_dur))
+    sub = sub.set_fps(30)
+
     x1, y1, x2, y2 = crop_box
     dur = max(sub.duration, 0.1)
 
@@ -165,7 +176,7 @@ def prepare_crystal_phone_clip(raw_clip, start_t, end_t, crop_box, subtle_zoom=T
         ch, cw = cropped.shape[:2]
 
         scale_base = max(PHONE_W / max(cw, 1), PHONE_H / max(ch, 1))
-        zoom_factor = 1.0 + (0.03 * min(max(t / dur, 0.0), 1.0) if subtle_zoom else 0.0)
+        zoom_factor = 1.0 + (0.022 * min(max(t / dur, 0.0), 1.0) if subtle_zoom else 0.0)
         nw = int(cw * scale_base * zoom_factor)
         nh = int(ch * scale_base * zoom_factor)
         upscaled = cv2.resize(cropped, (nw, nh), interpolation=cv2.INTER_LANCZOS4)
@@ -176,18 +187,9 @@ def prepare_crystal_phone_clip(raw_clip, start_t, end_t, crop_box, subtle_zoom=T
         if screen.shape[0] != PHONE_H or screen.shape[1] != PHONE_W:
             screen = cv2.resize(screen, (PHONE_W, PHONE_H), interpolation=cv2.INTER_LANCZOS4)
 
-        # Gentle edge-preserving denoise + fine-radius unsharp mask for razor-sharp text & numbers
-        denoised = cv2.bilateralFilter(screen, d=3, sigmaColor=15, sigmaSpace=15)
-        blurred = cv2.GaussianBlur(denoised, (0, 0), sigmaX=0.80)
-        crisp = cv2.addWeighted(denoised, 1.75, blurred, -0.75, 0)
-        crisp = cv2.convertScaleAbs(crisp, alpha=1.04, beta=2)
-
-        # Subtle diagonal glass sheen sweep across the screen
-        sweep_x = int(((t / dur) * 1.4 - 0.2) * PHONE_W)
-        if 0 <= sweep_x < PHONE_W:
-            x_idx = np.arange(PHONE_W)[None, :]
-            sheen = np.exp(-((x_idx - sweep_x) / 55.0) ** 2) * 14.0
-            crisp = np.clip(crisp.astype(np.float32) + sheen[:, :, None], 0, 255).astype(np.uint8)
+        blurred = cv2.GaussianBlur(screen, (0, 0), sigmaX=0.75)
+        crisp = cv2.addWeighted(screen, 1.55, blurred, -0.55, 0)
+        crisp = cv2.convertScaleAbs(crisp, alpha=1.03, beta=2)
 
         canvas = STUDIO_BG.copy()
         roi = canvas[PHONE_Y:PHONE_Y + PHONE_H, PHONE_X:PHONE_X + PHONE_W].astype(np.float32)
@@ -197,94 +199,70 @@ def prepare_crystal_phone_clip(raw_clip, start_t, end_t, crop_box, subtle_zoom=T
 
     return sub.fl(render_crystal_frame)
 
-def prepare_native_broll(broll_path, duration, fallback_clip):
-    """Loads official 1080x1920 FaucetPay 3D UI B-roll cleanly."""
-    if not broll_path:
-        return fallback_clip
-    clip = VideoFileClip(broll_path).without_audio()
-    use_dur = min(duration, max(0.5, clip.duration - 0.05))
-    return clip.subclip(0, use_dur).resize((W, H)).set_fps(30)
+def build_official_logo_card(logo_path, duration, is_outro=False):
+    """Creates a 100% original animated card using FaucetPay's official PNG logo (0% stock video hash)."""
+    bg = STUDIO_BG.copy()
+    pil_card = Image.fromarray(bg).convert("RGBA")
+    draw = ImageDraw.Draw(pil_card)
 
-def smart_key_sticker(video_path, target_width):
-    """Keys greenscreen stickers (HSV + spill removal) OR dark-bg stickers (Max-RGB) cleanly."""
-    raw = VideoFileClip(video_path).without_audio().resize(width=target_width).set_fps(30)
-    is_greenscreen = "greenscreen" in os.path.basename(video_path).lower()
-    max_t = max(0.0, raw.duration - 0.04)
+    draw.rounded_rectangle([85, 520, W - 85, 1380], radius=44, fill=(8, 18, 40, 245), outline=(0, 215, 255, 255), width=5)
 
-    if is_greenscreen:
-        def remove_green_spill(frame):
-            hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV).astype(np.float32)
-            spill = (hsv[:, :, 0] > 35) & (hsv[:, :, 0] < 92) & (hsv[:, :, 1] > 55)
-            hsv[spill, 1] *= 0.12
-            return cv2.cvtColor(np.clip(hsv, 0, 255).astype(np.uint8), cv2.COLOR_HSV2RGB)
+    if logo_path and os.path.exists(logo_path):
+        logo_img = Image.open(logo_path).convert("RGBA")
+        lw = 640
+        lh = int(logo_img.height * (lw / logo_img.width))
+        logo_img = logo_img.resize((lw, lh), Image.LANCZOS)
+        pil_card.paste(logo_img, ((W - lw) // 2, 650), logo_img)
 
-        def make_green_mask(t):
-            frame = raw.get_frame(min(max(0.0, t), max_t))
-            hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
-            bg = cv2.inRange(hsv, np.array([36, 70, 50]), np.array([88, 255, 255]))
-            fg = cv2.GaussianBlur(255 - bg, (5, 5), 0)
-            return fg.astype(np.float32) / 255.0
+    try:
+        f_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 43)
+        f_sub = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 33)
+    except Exception:
+        f_title = f_sub = ImageFont.load_default()
 
-        clean_rgb = raw.fl_image(remove_green_spill)
-        mask_clip = VideoClip(make_green_mask, ismask=True, duration=raw.duration).set_fps(30)
-        return clean_rgb.set_mask(mask_clip)
+    if is_outro:
+        line1 = "TRY FAUCETPAY MICRO-WALLET"
+        line2 = "OFFICIAL LINK IN DESCRIPTION ↓"
     else:
-        def make_maxrgb_mask(t):
-            frame = raw.get_frame(min(max(0.0, t), max_t))
-            peak = np.max(frame, axis=2).astype(np.float32)
-            fg = np.clip((peak - 8.0) * (255.0 / 18.0), 0, 255)
-            fg = cv2.GaussianBlur(fg, (5, 5), 0)
-            return fg / 255.0
+        line1 = "MY REAL FAUCETPAY WALKTHROUGH"
+        line2 = "LIVE BALANCE • INSTANT SWAP • FAUCETS & PTC"
 
-        mask_clip = VideoClip(make_maxrgb_mask, ismask=True, duration=raw.duration).set_fps(30)
-        return raw.set_mask(mask_clip)
+    b1 = draw.textbbox((0, 0), line1, font=f_title)
+    b2 = draw.textbbox((0, 0), line2, font=f_sub)
+    draw.text(((W - (b1[2] - b1[0])) // 2, 960), line1, font=f_title, fill=(255, 255, 255, 255))
+    draw.text(((W - (b2[2] - b2[0])) // 2, 1045), line2, font=f_sub, fill=(255, 225, 55, 255))
 
-def make_swap_confirmed_badge(start_t, duration):
-    """Renders an authentic, crystal-clear 'SWAP COMPLETED: 1 USDT -> 0.020916 LTC' pill badge."""
-    bw, bh = 740, 108
+    card_rgb = np.array(pil_card.convert("RGB"))
+    return ImageClip(card_rgb).set_duration(duration).set_fps(30)
+
+def make_status_pill(top_text, bot_text, start_t, duration):
+    """Renders a crystal-clear live verification badge at the top of the screen."""
+    bw, bh = 790, 106
     img = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     try:
-        f_top = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 28)
-        f_bot = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 34)
+        f_top = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 26)
+        f_bot = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 32)
     except Exception:
         f_top = f_bot = ImageFont.load_default()
 
-    draw.rounded_rectangle([4, 4, bw - 4, bh - 4], radius=50, fill=(6, 40, 28, 244), outline=(34, 235, 130, 255), width=4)
-    t1 = "INSTANT SWAP COMPLETED • 0 FEE"
-    t2 = "1.00 USDT  →  0.020916 LTC"
-    b1 = draw.textbbox((0, 0), t1, font=f_top)
-    b2 = draw.textbbox((0, 0), t2, font=f_bot)
-    draw.text(((bw - (b1[2] - b1[0])) // 2, 16), t1, font=f_top, fill=(80, 255, 165, 255))
-    draw.text(((bw - (b2[2] - b2[0])) // 2, 52), t2, font=f_bot, fill=(255, 255, 255, 255))
+    draw.rounded_rectangle([4, 4, bw - 4, bh - 4], radius=50, fill=(6, 40, 28, 242), outline=(34, 235, 130, 255), width=4)
+    b1 = draw.textbbox((0, 0), top_text, font=f_top)
+    b2 = draw.textbbox((0, 0), bot_text, font=f_bot)
+    draw.text(((bw - (b1[2] - b1[0])) // 2, 16), top_text, font=f_top, fill=(80, 255, 165, 255))
+    draw.text(((bw - (b2[2] - b2[0])) // 2, 52), bot_text, font=f_bot, fill=(255, 255, 255, 255))
 
     bx = (W - bw) // 2
-    clip = ImageClip(np.array(img)).set_start(start_t).set_duration(duration)
-    return clip.set_position(lambda t: (bx, int(130 + max(0.0, (0.14 - t) / 0.14) * -22)))
+    return ImageClip(np.array(img)).set_start(start_t).set_duration(duration).set_position((bx, 125))
 
-def make_top_progress_bar(total_duration=30.0):
-    """Creates a sleek gold-cyan retention progress bar along the top edge."""
-    bar_h = 12
-    def make_frame(t):
-        frame = np.zeros((bar_h, W, 3), dtype=np.uint8)
-        frame[:, :] = [12, 18, 36]
-        fill_w = int(np.clip(t / total_duration, 0.0, 1.0) * W)
-        if fill_w > 0:
-            x_grad = np.linspace(0, 1, fill_w)
-            frame[:, :fill_w, 0] = (x_grad * 255).astype(np.uint8)
-            frame[:, :fill_w, 1] = (210 + x_grad * 20).astype(np.uint8)
-            frame[:, :fill_w, 2] = (255 - x_grad * 195).astype(np.uint8)
-        return frame
-    return VideoClip(make_frame, duration=total_duration).set_fps(30).set_position((0, 0))
-
-def make_punch_caption(line1, line2, start_t, duration, highlight_second=True):
-    """Renders 2-line commercial captions in the dual safe-zone (y=1468..1683)."""
+def make_punch_caption(line1, line2, start_t, duration):
+    """Renders 2-line review captions in the bottom safe zone (y=1472..1685)."""
     canvas_w, canvas_h = 940, 215
     img = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     try:
-        font1 = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 35)
-        font2 = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 42)
+        font1 = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 34)
+        font2 = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 40)
     except Exception:
         font1 = font2 = ImageFont.load_default()
 
@@ -298,13 +276,7 @@ def make_punch_caption(line1, line2, start_t, duration, highlight_second=True):
     bx = (canvas_w - box_w) // 2
     by = (canvas_h - box_h) // 2
 
-    draw.rounded_rectangle(
-        [bx, by, bx + box_w, by + box_h],
-        radius=26,
-        fill=(6, 12, 26, 240),
-        outline=(0, 215, 255, 255),
-        width=4
-    )
+    draw.rounded_rectangle([bx, by, bx + box_w, by + box_h], radius=26, fill=(6, 12, 26, 242), outline=(0, 215, 255, 255), width=4)
 
     x1 = (canvas_w - w1) // 2
     y1 = by + 16
@@ -313,173 +285,159 @@ def make_punch_caption(line1, line2, start_t, duration, highlight_second=True):
 
     x2 = (canvas_w - w2) // 2
     y2 = y1 + h1 + 11
-    c2 = (255, 225, 55, 255) if highlight_second else (0, 225, 255, 255)
     draw.text((x2 + 3, y2 + 3), line2, font=font2, fill=(0, 0, 0, 255))
-    draw.text((x2, y2), line2, font=font2, fill=c2)
+    draw.text((x2, y2), line2, font=font2, fill=(255, 225, 55, 255))
 
-    base_clip = ImageClip(np.array(img)).set_start(start_t).set_duration(duration)
-    return base_clip.set_position(lambda t: (35, int(1468 + max(0.0, (0.12 - t) / 0.12) * 22)))
+    return ImageClip(np.array(img)).set_start(start_t).set_duration(duration).set_position((35, 1472))
 
-def prepare_notebooklm_voice(voice_path, max_spoken_seconds=29.2):
-    """Uses the user's exact NotebookLM voice at 1.00x natural speed without clipping any ending syllable."""
-    clean_wav = "voice_clean.wav"
+def make_top_progress_bar(total_duration):
+    bar_h = 12
+    def make_frame(t):
+        frame = np.zeros((bar_h, W, 3), dtype=np.uint8)
+        frame[:, :] = [12, 18, 36]
+        fill_w = int(np.clip(t / total_duration, 0.0, 1.0) * W)
+        if fill_w > 0:
+            x_grad = np.linspace(0, 1, fill_w)
+            frame[:, :fill_w, 0] = (x_grad * 255).astype(np.uint8)
+            frame[:, :fill_w, 1] = (210 + x_grad * 20).astype(np.uint8)
+            frame[:, :fill_w, 2] = (255 - x_grad * 195).astype(np.uint8)
+        return frame
+    return VideoClip(make_frame, duration=total_duration).set_fps(30).set_position((0, 0))
+
+def humanize_voice_for_review(voice_path):
+    """
+    Preserves natural 1.00x pacing and adds:
+    1. Warm smartphone/collar mic EQ & subtle room reflection
+    2. Continuous natural indoor room tone (-38dB) so there is zero digital dead-silence between pauses
+    """
+    raw_wav = "voice_clean.wav"
+    human_wav = "voice_human.wav"
+
     subprocess.run([
         "ffmpeg", "-y", "-i", voice_path,
         "-vn", "-ac", "2", "-ar", "44100",
-        "-af", "highpass=f=80,equalizer=f=3000:t=q:w=1.2:g=2.2,acompressor=threshold=-18dB:ratio=2.5:attack=10:release=140,alimiter=limit=0.94",
-        clean_wav
+        "-af", (
+            "highpass=f=90,lowpass=f=11200,"
+            "equalizer=f=220:t=q:w=1.1:g=1.8,"
+            "equalizer=f=2700:t=q:w=1.2:g=1.9,"
+            "aecho=0.8:0.88:18:0.07,"
+            "acompressor=threshold=-19dB:ratio=2.3:attack=12:release=160,alimiter=limit=0.95"
+        ),
+        raw_wav
     ], check=True)
 
-    voice_clip = AudioFileClip(clean_wav)
-    print(f"🎙️ NotebookLM natural voice duration: {voice_clip.duration:.2f}s")
+    probe = AudioFileClip(raw_wav)
+    dur = probe.duration
+    probe.close()
 
-    # Trims only the silent NotebookLM end-card after 29.2s; spoken audio finishes at ~27.6s so 100% is preserved
-    if voice_clip.duration > max_spoken_seconds:
-        voice_clip = voice_clip.subclip(0, max_spoken_seconds).audio_fadeout(0.30)
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-i", raw_wav,
+        "-f", "lavfi", "-i", f"anoisesrc=color=pink:amplitude=0.0055:duration={dur + 0.2}",
+        "-filter_complex",
+        f"[0:a]afade=t=out:st={max(0.5, dur - 0.25)}:d=0.25[v];"
+        f"[1:a]highpass=f=110,lowpass=f=2200[air];"
+        f"[v][air]amix=inputs=2:duration=first:weights=1 0.22",
+        human_wav
+    ], check=True)
 
-    return voice_clip
+    clip = AudioFileClip(human_wav)
+    print(f"🎙️ Humanized Room-Acoustic Voice Ready: {clip.duration:.2f}s")
+    return clip
 
-def build_smooth_fintech_bed(duration=30.0):
-    """Generates a warm, clean ambient fintech pulse so the natural voice shines clearly."""
+def build_smooth_fintech_bed(duration):
     bed_wav = "bg_pulse.wav"
-    try:
-        subprocess.run([
-            "ffmpeg", "-y",
-            "-f", "lavfi", "-i", f"sine=frequency=130.81:sample_rate=44100:duration={duration}",
-            "-f", "lavfi", "-i", f"sine=frequency=196.00:sample_rate=44100:duration={duration}",
-            "-f", "lavfi", "-i", f"sine=frequency=261.63:sample_rate=44100:duration={duration}",
-            "-filter_complex",
-            "[0:a]tremolo=f=2.0:d=0.45,lowpass=f=320,volume=0.10[a0];"
-            "[1:a]tremolo=f=4.0:d=0.50,lowpass=f=420,volume=0.055[a1];"
-            "[2:a]tremolo=f=1.0:d=0.35,lowpass=f=520,volume=0.035[a2];"
-            "[a0][a1][a2]amix=inputs=3:duration=first,afade=t=in:st=0:d=0.6,afade=t=out:st=27.5:d=2.5",
-            bed_wav
-        ], check=True)
-        return AudioFileClip(bed_wav).volumex(0.30)
-    except Exception:
-        subprocess.run([
-            "ffmpeg", "-y", "-f", "lavfi",
-            "-i", f"anoisesrc=color=pink:amplitude=0.012:duration={duration}",
-            "-af", "lowpass=f=220,afade=t=in:st=0:d=0.8,afade=t=out:st=27.5:d=2.5",
-            bed_wav
-        ], check=True)
-        return AudioFileClip(bed_wav).volumex(0.28)
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", f"sine=frequency=130.81:sample_rate=44100:duration={duration}",
+        "-f", "lavfi", "-i", f"sine=frequency=196.00:sample_rate=44100:duration={duration}",
+        "-filter_complex",
+        "[0:a]tremolo=f=1.5:d=0.35,lowpass=f=280,volume=0.07[a0];"
+        "[1:a]tremolo=f=3.0:d=0.40,lowpass=f=360,volume=0.04[a1];"
+        f"[a0][a1]amix=inputs=2:duration=first,afade=t=in:st=0:d=0.8,afade=t=out:st={duration - 2.5}:d=2.5",
+        bed_wav
+    ], check=True)
+    return AudioFileClip(bed_wav).volumex(0.22)
 
 def build_masterpiece():
-    print("🚀 Starting Ultra-Crystal 100/100 FaucetPay Short Render with NotebookLM Voice...")
-    screen_path = find_asset("screen_record*", required=True)
-    voice_path = find_user_voice_file()
+    print("🚀 Rendering Crystal-Clear 85+ Score FaucetPay Full Review Short...")
+    screen_path = get_screen_recording()
+    voice_path = find_user_voice_file(screen_path)
+    logo_dark_path = find_asset("fp-logo-full-on-dark*", required=False)
+
+    voice = humanize_voice_for_review(voice_path)
+    total_dur = max(53.0, round(voice.duration + 2.8, 2))
+    print(f"⏱️ Final Video Duration Locked to {total_dur:.2f}s (100% Audio Preserved)")
 
     crop_box = detect_mobile_viewport(screen_path)
-    print(f"📐 Detected Mobile Viewport Crop Box: {crop_box}")
-
     raw_screen = VideoFileClip(screen_path).without_audio()
 
-    # 1. Exact Voice-Synced 30.0s Commercial Timeline
-    intro_path = find_asset("fp-stream-intro-4s*", required=False)
-    if intro_path:
-        intro_raw = VideoFileClip(intro_path).without_audio()
-        c_intro = intro_raw.subclip(0, min(1.5, intro_raw.duration)).resize((W, H)).set_fps(30)
-    else:
-        c_intro = prepare_crystal_phone_clip(raw_screen, 0.0, 1.5, crop_box, subtle_zoom=False)
+    intro_dur = 1.5
+    outro_dur = 2.5
+    body_dur = total_dur - intro_dur - outro_dur
 
-    c_hook_real = prepare_crystal_phone_clip(raw_screen, 0.0, 3.0, crop_box, subtle_zoom=True)
-
-    c_broll_claim = prepare_native_broll(
-        find_asset("fp-broll-ui-claim*", required=False), 3.0,
-        prepare_crystal_phone_clip(raw_screen, 67.0, 70.0, crop_box, subtle_zoom=True)
-    )
-    c_real_ptc = prepare_crystal_phone_clip(raw_screen, 70.0, 73.0, crop_box, subtle_zoom=True)
-
-    c_broll_bal = prepare_native_broll(
-        find_asset("fp-broll-ui-balance*", required=False), 2.5,
-        prepare_crystal_phone_clip(raw_screen, 13.0, 15.5, crop_box, subtle_zoom=True)
-    )
-    c_real_wallet = prepare_crystal_phone_clip(raw_screen, 14.5, 18.0, crop_box, subtle_zoom=True)
-
-    c_real_swap = prepare_crystal_phone_clip(raw_screen, 53.5, 60.5, crop_box, subtle_zoom=True)
-
-    c_close_real = prepare_crystal_phone_clip(raw_screen, 0.5, 3.0, crop_box, subtle_zoom=False)
-    outro_raw = VideoFileClip(find_asset("fp-stream-outro-5s*", required=True)).without_audio()
-    c_outro = outro_raw.subclip(0, min(4.0, outro_raw.duration)).resize((W, H)).set_fps(30)
+    c_intro = build_official_logo_card(logo_dark_path, intro_dur, is_outro=False)
+    c_wallet = prepare_crystal_phone_clip(raw_screen, 0.0, 6.0, crop_box, target_dur=body_dur * 0.16, subtle_zoom=True)
+    c_withdraw = prepare_crystal_phone_clip(raw_screen, 6.0, 10.2, crop_box, target_dur=body_dur * 0.12, subtle_zoom=True)
+    c_swap_setup = prepare_crystal_phone_clip(raw_screen, 34.0, 49.2, crop_box, target_dur=body_dur * 0.26, subtle_zoom=True)
+    c_swap_done = prepare_crystal_phone_clip(raw_screen, 49.5, 54.5, crop_box, target_dur=body_dur * 0.14, subtle_zoom=True)
+    c_faucets = prepare_crystal_phone_clip(raw_screen, 62.0, 68.5, crop_box, target_dur=body_dur * 0.16, subtle_zoom=True)
+    c_ptc = prepare_crystal_phone_clip(raw_screen, 74.0, 82.5, crop_box, target_dur=body_dur * 0.16, subtle_zoom=True)
+    c_outro = build_official_logo_card(logo_dark_path, outro_dur, is_outro=True)
 
     base_timeline = concatenate_videoclips(
-        [c_intro, c_hook_real, c_broll_claim, c_real_ptc, c_broll_bal, c_real_wallet, c_real_swap, c_close_real, c_outro],
+        [c_intro, c_wallet, c_withdraw, c_swap_setup, c_swap_done, c_faucets, c_ptc, c_outro],
         method="compose"
-    ).set_duration(30.0)
+    ).set_duration(total_dur)
 
     layers = [base_timeline]
 
-    # 2. Official Brand Badge & Accurate Graphics
-    logo_pop_path = find_asset("fp-edit-sticker-logo-pop*", required=False)
-    if logo_pop_path:
-        layers.append(
-            smart_key_sticker(logo_pop_path, 380)
-            .set_start(1.6)
-            .set_duration(2.42)
-            .set_position(("center", 180))
-        )
-
-    logo_dark_path = find_asset("fp-logo-full-on-dark*", required=False)
     if logo_dark_path:
         layers.append(
             ImageClip(logo_dark_path)
-            .resize(width=225)
-            .set_start(4.1)
-            .set_duration(21.9)
-            .set_position((W - 270, 32))
+            .resize(width=220)
+            .set_start(intro_dur)
+            .set_duration(body_dur)
+            .set_position((W - 265, 28))
         )
 
-    mark_spin_path = find_asset("fp-edit-sticker-mark-spin*", required=False)
-    if mark_spin_path:
-        layers.append(
-            smart_key_sticker(mark_spin_path, 200)
-            .set_start(7.5)
-            .set_duration(2.42)
-            .set_position((45, 200))
-        )
+    t_swap_done = intro_dur + body_dur * 0.54
+    t_earn = intro_dur + body_dur * 0.68
 
-    layers.append(make_swap_confirmed_badge(19.0, 4.2))
+    layers.append(make_status_pill("MY LIVE FAUCETPAY WALLET", "BALANCE: $6.03 • 23 COINS + WITHDRAWALS", 2.0, body_dur * 0.26))
+    layers.append(make_status_pill("INSTANT SWAP COMPLETED • 0.03 FEE", "1.00 USDT  →  0.02079889 LTC", t_swap_done, body_dur * 0.14))
+    layers.append(make_status_pill("600+ FAUCET SITES & PTC LISTINGS", "INSTANT DIRECT PAYOUTS • NO DEPOSIT FEE", t_earn, body_dur * 0.30))
 
-    # 3. 100% Rules-Safe Commercial Captions synced to your new script
     captions = [
-        ("STOP LOSING CRYPTO TO GAS FEES", "FAUCETPAY FIXES THIS INSTANTLY", 0.30, 4.1),
-        ("STEP 1: MICRO-PAYOUTS", "VERIFIED FAUCETS & QUICK PTC", 4.60, 5.7),
-        ("STEP 2: ONE CLEAN DASHBOARD", "HOLD 20+ COINS IN ONE WALLET", 10.60, 5.7),
-        ("STEP 3: LIVE INSTANT SWAP", "USDT → LTC WITH ZERO FEES", 16.60, 6.7),
-        ("SIMPLIFY YOUR MICRO-WALLET", "CHECK OFFICIAL LINK IN DESCRIPTION", 23.50, 2.7),
+        ("MY REAL FAUCETPAY EXPERIENCE", "$6.03 ACROSS 23 COINS + WITHDRAWALS", intro_dur, body_dur * 0.28),
+        ("BUILT-IN COIN SWAP TOOL", "1 USDT → LITECOIN • 3¢ MINIMAL FEE", intro_dur + body_dur * 0.28, body_dur * 0.26),
+        ("SWAP COMPLETED INSTANTLY!", "0.02079889 LTC CREDITED LIVE", t_swap_done, body_dur * 0.14),
+        ("FAUCET SITES & PTC LISTINGS", "DIRECT INSTANT PAYOUTS • NO DEPOSIT FEE", t_earn, body_dur * 0.32),
     ]
     for l1, l2, st, dur in captions:
         layers.append(make_punch_caption(l1, l2, st, dur))
 
-    # 4. Top Retention Progress Bar
-    layers.append(make_top_progress_bar(30.0))
+    layers.append(make_top_progress_bar(total_dur))
 
-    final_video = CompositeVideoClip(layers, size=(W, H)).set_duration(30.0)
+    final_video = CompositeVideoClip(layers, size=(W, H)).set_duration(total_dur)
 
-    # 5. Natural Studio Audio Mix (1.00x NotebookLM Voice + Smooth Bed + Official SFX)
     audio_tracks = []
-    voice = prepare_notebooklm_voice(voice_path, max_spoken_seconds=29.2)
-    audio_tracks.append(voice.set_start(0.15).volumex(1.24))
-    audio_tracks.append(build_smooth_fintech_bed(30.0))
+    audio_tracks.append(voice.set_start(0.35).volumex(1.25))
+    audio_tracks.append(build_smooth_fintech_bed(total_dur))
 
     sonic_path = find_asset("fp-audio-sonic-logo*", required=False)
     if sonic_path:
-        audio_tracks.append(AudioFileClip(sonic_path).set_start(0.0).volumex(0.55))
-
-    drip_path = find_asset("fp-audio-sfx-coin-drip*", required=False, exclude_word="cascade")
-    if drip_path:
-        audio_tracks.append(AudioFileClip(drip_path).set_start(7.5).volumex(0.65))
+        audio_tracks.append(AudioFileClip(sonic_path).set_start(0.0).volumex(0.45))
 
     cascade_path = find_asset("fp-audio-sfx-coin-drip-cascade*", required=False)
     if cascade_path:
-        audio_tracks.append(AudioFileClip(cascade_path).set_start(19.0).volumex(0.72))
+        audio_tracks.append(AudioFileClip(cascade_path).set_start(t_swap_done + 0.3).volumex(0.60))
 
-    final_audio = CompositeAudioClip(audio_tracks).set_duration(30.0)
+    final_audio = CompositeAudioClip(audio_tracks).set_duration(total_dur)
     final_video = final_video.set_audio(final_audio)
 
     output_name = "final_faucetpay_shorts.mp4"
-    print(f"🎬 Exporting {output_name} (1080x1920, 30fps, 14Mbps Ultra-Crystal Master)...")
+    print(f"🎬 Exporting {output_name} ({total_dur:.2f}s Full Review, 1080x1920, 14Mbps)...")
     final_video.write_videofile(
         output_name,
         fps=30,
@@ -490,7 +448,7 @@ def build_masterpiece():
         threads=4,
         ffmpeg_params=["-pix_fmt", "yuv420p", "-movflags", "+faststart"]
     )
-    print("✨ Ultra-Crystal 100/100 Short Rendered Successfully!")
+    print("✨ High-Score (85+) FaucetPay Review Short Rendered Successfully!")
 
 if __name__ == "__main__":
     build_masterpiece()
