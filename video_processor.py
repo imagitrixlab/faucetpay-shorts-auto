@@ -22,58 +22,9 @@ from moviepy.editor import (
 W, H = 1080, 1920
 VALID_AUDIO_EXTS = (".wav", ".mp3", ".m4a", ".aac", ".ogg", ".flac")
 VALID_MEDIA_EXTS = VALID_AUDIO_EXTS + (".mp4", ".webm", ".mov")
-VALID_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp")
-VALID_VIDEO_EXTS = (".mp4", ".mov", ".webm", ".mkv")
-
-def scan_all_starter_assets():
-    """Scans root & assets/ folder and inventories every FaucetPay Starter Kit file."""
-    inventory = {
-        "logos_dark": [],
-        "logos_light": [],
-        "icons": [],
-        "sonic": [],
-        "sfx_coin": [],
-        "sfx_other": [],
-        "broll": [],
-    }
-    ignored_prefixes = ("final_faucetpay_shorts", "voice_", "bg_pulse", "room_air", "tts_", "seg_", "broll_bg", "screen_record")
-
-    for folder in (".", "assets"):
-        if not os.path.isdir(folder):
-            continue
-        for root_dir, _, files in os.walk(folder):
-            for fname in sorted(files):
-                fpath = os.path.join(root_dir, fname)
-                low = fname.lower()
-                if low.startswith(ignored_prefixes):
-                    continue
-                if not low.startswith("fp-"):
-                    continue
-
-                if low.endswith(VALID_IMAGE_EXTS):
-                    if "icon" in low or "badge" in low or "mark" in low:
-                        inventory["icons"].append(fpath)
-                    elif "light" in low:
-                        inventory["logos_light"].append(fpath)
-                    else:
-                        inventory["logos_dark"].append(fpath)
-                elif low.endswith(VALID_AUDIO_EXTS):
-                    if "sonic" in low:
-                        inventory["sonic"].append(fpath)
-                    elif "coin" in low or "drip" in low or "cascade" in low:
-                        inventory["sfx_coin"].append(fpath)
-                    else:
-                        inventory["sfx_other"].append(fpath)
-                elif low.endswith(VALID_VIDEO_EXTS):
-                    inventory["broll"].append(fpath)
-
-    print("📦 FaucetPay Starter Kit Inventory Detected:")
-    for k, v in inventory.items():
-        print(f"   • {k}: {len(v)} file(s) -> {v}")
-    return inventory
 
 def get_screen_recording():
-    """Downloads the screen recording from Google Drive open link cleanly without --fuzzy."""
+    """Downloads the screen recording from Google Drive open link cleanly."""
     link = GDRIVE_SCREEN_LINK.strip()
     if link.startswith("http"):
         print("☁️ Downloading screen recording from Google Drive open link...")
@@ -108,12 +59,26 @@ def get_screen_recording():
             return matches[0]
     raise FileNotFoundError("❌ Screen recording not found!")
 
+def find_asset_file(filename_part):
+    """Finds a specific FaucetPay starter kit asset in assets/ or root."""
+    for folder in ("assets", "."):
+        if not os.path.isdir(folder):
+            continue
+        for fname in sorted(os.listdir(folder)):
+            if filename_part.lower() in fname.lower():
+                fpath = os.path.join(folder, fname)
+                if os.path.isfile(fpath):
+                    print(f"✅ Loaded Starter Asset -> {fpath}")
+                    return fpath
+    return None
+
 def find_user_voice_file(screen_path):
     """Automatically selects the latest uploaded voice audio file in root or assets/."""
     screen_base = os.path.basename(screen_path).lower()
     excluded_prefixes = (
         "final_faucetpay_shorts", "voice_clean", "voice_human", "bg_pulse",
-        "room_air", "tts_", "fp-", "60317", "screen_record", "screen_recording", "seg_", "broll_bg"
+        "room_air", "tts_", "fp-", "60317", "screen_record", "screen_recording",
+        "seg_", "broll_bg", "alpha_"
     )
 
     audio_candidates = []
@@ -144,7 +109,7 @@ def find_user_voice_file(screen_path):
         print(f"🎙️ Selected User Voice Media -> {chosen}")
         return chosen
 
-    raise FileNotFoundError("❌ No user voice/audio file found! Upload your .wav audio file to GitHub.")
+    raise FileNotFoundError("❌ No user voice/audio file found! Upload Rina's .wav audio file to GitHub.")
 
 def get_video_info(video_path):
     """Gets dimensions, clean crop box, and duration via OpenCV."""
@@ -186,12 +151,11 @@ def build_studio_base_and_mask():
 
     base_rgb = np.clip(bg, 0, 255).astype(np.uint8)
 
-    # Bezel overlay (RGBA) drawn AFTER optional blurred B-Roll backdrop texture
     bezel = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(bezel)
     draw.rounded_rectangle(
         [PHONE_X - 16, PHONE_Y - 14, PHONE_X + PHONE_W + 16, PHONE_Y + PHONE_H + 18],
-        radius=46, fill=(2, 10, 12, 210)
+        radius=46, fill=(2, 10, 12, 212)
     )
     draw.rounded_rectangle(
         [PHONE_X - 7, PHONE_Y - 7, PHONE_X + PHONE_W + 7, PHONE_Y + PHONE_H + 7],
@@ -209,25 +173,74 @@ def build_studio_base_and_mask():
 
 BASE_STAGE_RGB, BEZEL_RGB, BEZEL_ALPHA, SCREEN_ALPHA = build_studio_base_and_mask()
 
-def prepare_broll_backdrop_reader(broll_list, total_dur):
-    """
-    Safely utilizes Starter Kit B-Roll clips as a heavily blurred, dark ambient stage texture
-    (14% opacity behind the phone bezel) so 100% of starter assets are used with ZERO stock-clip penalty.
-    """
-    if not broll_list:
+def load_alpha_webm_clip(webm_path, prefix, target_w, target_h, target_dur):
+    """Decodes VP9 alpha .webm overlay cleanly into a transparent MoviePy clip."""
+    if not webm_path or not os.path.exists(webm_path):
+        return None
+    rgb_out = f"alpha_{prefix}_rgb.mp4"
+    msk_out = f"alpha_{prefix}_msk.mp4"
+
+    # Probe source duration
+    cap = cv2.VideoCapture(webm_path)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    fc = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 90.0
+    cap.release()
+    src_dur = max(0.5, fc / fps)
+    pts_factor = target_dur / src_dur
+
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-c:v", "libvpx-vp9",
+        "-i", webm_path,
+        "-filter_complex",
+        f"[0:v]setpts={pts_factor:.6f}*PTS,fps=30,scale={target_w}:{target_h}:flags=lanczos,format=rgba,split[c][a];"
+        f"[a]alphaextract[m]",
+        "-map", "[c]", "-t", f"{target_dur:.3f}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p", "-an", rgb_out,
+        "-map", "[m]", "-t", f"{target_dur:.3f}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p", "-an", msk_out
+    ], check=True)
+
+    c_clip = VideoFileClip(rgb_out).without_audio().set_fps(30).set_duration(target_dur)
+    m_clip = VideoFileClip(msk_out, ismask=True).set_fps(30).set_duration(target_dur)
+    return c_clip.set_mask(m_clip)
+
+def make_greenscreen_sticker(mp4_path, size_px, start_t, duration, pos):
+    """Keys out green-screen background from official FaucetPay MP4 stickers cleanly."""
+    if not mp4_path or not os.path.exists(mp4_path):
+        return None
+    raw = VideoFileClip(mp4_path).without_audio().resize((size_px, size_px)).set_fps(30)
+    src_dur = max(0.5, raw.duration)
+
+    def key_rgb(get_frame, t):
+        frame = get_frame(t % src_dur)
+        return frame
+
+    def key_mask(get_frame, t):
+        frame = get_frame(t % src_dur)
+        hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
+        green = (hsv[:, :, 0] >= 35) & (hsv[:, :, 0] <= 90) & (hsv[:, :, 1] >= 55) & (hsv[:, :, 2] >= 55)
+        alpha = np.where(green, 0.0, 1.0).astype(np.float32)
+        alpha = cv2.GaussianBlur(alpha, (3, 3), 0)
+        return alpha
+
+    rgb_clip = raw.fl(key_rgb).set_duration(duration)
+    msk_clip = VideoClip(lambda t: key_mask(raw.get_frame, t), ismask=True, duration=duration).set_fps(30)
+    return rgb_clip.set_mask(msk_clip).set_start(start_t).set_position(pos)
+
+def prepare_broll_backdrop_reader(broll_path, total_dur):
+    """Integrates official fp-broll-ui-swap as a heavily blurred dark ambient texture (14% opacity)."""
+    if not broll_path or not os.path.exists(broll_path):
         return None
     broll_bg_path = "broll_bg.mp4"
-    src = broll_list[0]
     subprocess.run([
         "ffmpeg", "-y",
         "-stream_loop", "-1",
-        "-i", src,
+        "-i", broll_path,
         "-t", f"{total_dur:.2f}",
         "-vf", f"fps=30,scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},boxblur=24:4,eq=brightness=-0.30:saturation=0.55",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "24", "-pix_fmt", "yuv420p", "-an",
         broll_bg_path
     ], check=True)
-    print(f"🎨 Integrated Starter Kit B-Roll Ambient Backdrop -> {os.path.basename(src)}")
+    print(f"🎨 Integrated Starter Kit B-Roll Ambient Backdrop -> {os.path.basename(broll_path)}")
     return VideoFileClip(broll_bg_path).without_audio().set_fps(30)
 
 def prepare_crystal_phone_clip(screen_path, seg_idx, start_t, end_t, raw_dur, crop_box, target_dur, stage_offset_t=0.0, broll_clip=None):
@@ -279,11 +292,9 @@ def prepare_crystal_phone_clip(screen_path, seg_idx, start_t, end_t, raw_dur, cr
             bframe = broll_clip.get_frame(bt).astype(np.float32)
             canvas_f = canvas_f * 0.86 + bframe * 0.14
 
-        # Apply titanium phone bezel
         canvas_f = BEZEL_RGB * BEZEL_ALPHA + canvas_f * (1.0 - BEZEL_ALPHA)
         canvas = np.clip(canvas_f, 0, 255).astype(np.uint8)
 
-        # Composite crystal-clear mobile screen inside bezel
         roi = canvas[PHONE_Y:PHONE_Y + PHONE_H, PHONE_X:PHONE_X + PHONE_W].astype(np.float32)
         blended = screen.astype(np.float32) * SCREEN_ALPHA + roi * (1.0 - SCREEN_ALPHA)
         canvas[PHONE_Y:PHONE_Y + PHONE_H, PHONE_X:PHONE_X + PHONE_W] = blended.astype(np.uint8)
@@ -303,43 +314,41 @@ def fit_font(draw, text, max_w, start_size):
             return f
     return ImageFont.load_default()
 
-def build_official_logo_card(logo_path, icon_path, duration, is_outro=False):
-    """Creates a 100% original animated card using FaucetPay's official PNG logo & icon."""
-    pil_card = Image.fromarray(BASE_STAGE_RGB.copy()).convert("RGBA")
-    draw = ImageDraw.Draw(pil_card)
+def build_animated_stream_card(stream_webm_path, logo_path, prefix, duration, is_outro=False):
+    """Combines official animated 9x16 FaucetPay stream intro/outro WebM over studio stage."""
+    base_bg = ImageClip(BASE_STAGE_RGB.copy()).set_duration(duration).set_fps(30)
+    card_layers = [base_bg]
 
-    draw.rounded_rectangle([75, 500, W - 75, 1400], radius=44, fill=(6, 26, 28, 248), outline=(40, 235, 165, 255), width=5)
+    anim_overlay = load_alpha_webm_clip(stream_webm_path, prefix, W, H, duration)
+    if anim_overlay is not None:
+        card_layers.append(anim_overlay.set_position((0, 0)))
+    elif logo_path and os.path.exists(logo_path):
+        card_layers.append(ImageClip(logo_path).resize(width=620).set_duration(duration).set_position(("center", 680)))
 
-    if logo_path and os.path.exists(logo_path):
-        logo_img = Image.open(logo_path).convert("RGBA")
-        lw = 640
-        lh = int(logo_img.height * (lw / logo_img.width))
-        logo_img = logo_img.resize((lw, lh), Image.LANCZOS)
-        pil_card.paste(logo_img, ((W - lw) // 2, 625), logo_img)
-
-    if icon_path and os.path.exists(icon_path):
-        ic = Image.open(icon_path).convert("RGBA").resize((84, 84), Image.LANCZOS)
-        pil_card.paste(ic, ((W - 84) // 2, 1145), ic)
+    # Crisp bottom tutorial subtitle pill on intro/outro
+    pill_w, pill_h = 900, 128
+    p_img = Image.new("RGBA", (pill_w, pill_h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(p_img)
+    draw.rounded_rectangle([4, 4, pill_w - 4, pill_h - 4], radius=30, fill=(4, 20, 24, 238), outline=(40, 235, 165, 255), width=4)
 
     if is_outro:
-        line1 = "TRY FAUCETPAY COIN SWAP"
-        line2 = "OFFICIAL LINK IN DESCRIPTION ↓"
+        l1 = "TRY FAUCETPAY INSTANT COIN SWAP"
+        l2 = "OFFICIAL LINK IN DESCRIPTION ↓"
     else:
-        line1 = "FAUCETPAY COIN SWAP TUTORIAL"
-        line2 = "HOW TO CONVERT CRYPTO IN 3 EASY STEPS"
+        l1 = "FAUCETPAY COIN SWAP TUTORIAL"
+        l2 = "HOW TO CONVERT CRYPTO IN 3 EASY STEPS"
 
-    f_title = fit_font(draw, line1, W - 210, 42)
-    f_sub = fit_font(draw, line2, W - 210, 32)
+    f1 = fit_font(draw, l1, pill_w - 70, 36)
+    f2 = fit_font(draw, l2, pill_w - 70, 30)
+    b1 = draw.textbbox((0, 0), l1, font=f1)
+    b2 = draw.textbbox((0, 0), l2, font=f2)
+    draw.text(((pill_w - (b1[2] - b1[0])) // 2, 20), l1, font=f1, fill=(255, 255, 255, 255))
+    draw.text(((pill_w - (b2[2] - b2[0])) // 2, 70), l2, font=f2, fill=(255, 225, 65, 255))
 
-    b1 = draw.textbbox((0, 0), line1, font=f_title)
-    b2 = draw.textbbox((0, 0), line2, font=f_sub)
-    draw.text(((W - (b1[2] - b1[0])) // 2, 935), line1, font=f_title, fill=(255, 255, 255, 255))
-    draw.text(((W - (b2[2] - b2[0])) // 2, 1020), line2, font=f_sub, fill=(255, 225, 55, 255))
+    card_layers.append(ImageClip(np.array(p_img)).set_duration(duration).set_position(((W - pill_w) // 2, 1460)))
+    return CompositeVideoClip(card_layers, size=(W, H)).set_duration(duration).set_fps(30)
 
-    card_rgb = np.array(pil_card.convert("RGB"))
-    return ImageClip(card_rgb).set_duration(duration).set_fps(30)
-
-def make_step_header(step_tag, bot_text, start_t, duration, icon_path=None):
+def make_step_header(step_tag, bot_text, start_t, duration):
     """Renders a crystal-clear STEP 1/2/3 tutorial header cleanly above the phone frame."""
     bw, bh = 880, 114
     img = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
@@ -347,20 +356,14 @@ def make_step_header(step_tag, bot_text, start_t, duration, icon_path=None):
 
     draw.rounded_rectangle([4, 4, bw - 4, bh - 4], radius=28, fill=(5, 28, 30, 246), outline=(255, 215, 65, 255), width=4)
 
-    text_offset_x = 0
-    if icon_path and os.path.exists(icon_path):
-        ic = Image.open(icon_path).convert("RGBA").resize((64, 64), Image.LANCZOS)
-        img.paste(ic, (28, (bh - 64) // 2), ic)
-        text_offset_x = 34
-
-    avail_w = bw - 120 - text_offset_x
+    avail_w = bw - 90
     f_top = fit_font(draw, step_tag, avail_w, 27)
     f_bot = fit_font(draw, bot_text, avail_w, 33)
 
     b1 = draw.textbbox((0, 0), step_tag, font=f_top)
     b2 = draw.textbbox((0, 0), bot_text, font=f_bot)
-    draw.text(((bw - (b1[2] - b1[0])) // 2 + text_offset_x // 2, 17), step_tag, font=f_top, fill=(255, 220, 75, 255))
-    draw.text(((bw - (b2[2] - b2[0])) // 2 + text_offset_x // 2, 55), bot_text, font=f_bot, fill=(255, 255, 255, 255))
+    draw.text(((bw - (b1[2] - b1[0])) // 2, 17), step_tag, font=f_top, fill=(255, 220, 75, 255))
+    draw.text(((bw - (b2[2] - b2[0])) // 2, 55), bot_text, font=f_bot, fill=(255, 255, 255, 255))
 
     bx = (W - bw) // 2
     return ImageClip(np.array(img)).set_start(start_t).set_duration(duration).set_position((bx, 88))
@@ -465,22 +468,30 @@ def build_smooth_fintech_bed(duration):
 
 def build_masterpiece():
     print("🚀 Rendering Full-Starter-Kit FaucetPay 3-Step Coin Swap Tutorial Clip...")
-    kit = scan_all_starter_assets()
     screen_path = get_screen_recording()
     voice_path = find_user_voice_file(screen_path)
 
-    logo_dark_path = kit["logos_dark"][0] if kit["logos_dark"] else (kit["logos_light"][0] if kit["logos_light"] else None)
-    icon_path = kit["icons"][0] if kit["icons"] else None
+    # Load all official FaucetPay Starter Kit assets from assets/
+    intro_webm = find_asset_file("fp-stream-intro-4s-alpha")
+    outro_webm = find_asset_file("fp-stream-outro-5s-alpha")
+    logo_dark = find_asset_file("fp-logo-full-on-dark")
+    broll_swap = find_asset_file("fp-broll-ui-swap") or find_asset_file("fp-broll-")
+    sticker_spin = find_asset_file("fp-edit-sticker-mark-spin")
+    sticker_claim = find_asset_file("fp-edit-sticker-claim-pop")
+    sticker_logo_pop = find_asset_file("fp-edit-sticker-logo-pop")
+    sonic_mp3 = find_asset_file("fp-audio-sonic-logo")
+    sfx_drop_mp3 = find_asset_file("fp-audio-sfx-coin-drop.mp3")
+    sfx_cascade_mp3 = find_asset_file("fp-audio-sfx-coin-drip-cascade")
 
     voice = humanize_voice_for_review(voice_path)
-    total_dur = max(45.0, round(voice.duration + 2.6, 2))
+    total_dur = max(46.0, round(voice.duration + 3.2, 2))
     print(f"⏱️ Final Tutorial Clip Duration Locked to {total_dur:.2f}s")
 
     crop_box, raw_dur = get_video_info(screen_path)
-    broll_clip = prepare_broll_backdrop_reader(kit["broll"], total_dur)
+    broll_clip = prepare_broll_backdrop_reader(broll_swap, total_dur)
 
-    intro_dur = 1.5
-    outro_dur = 2.3
+    intro_dur = 2.0
+    outro_dur = 2.6
     body_dur = total_dur - intro_dur - outro_dur
 
     d1 = body_dur * 0.27
@@ -488,13 +499,13 @@ def build_masterpiece():
     d3 = body_dur * 0.22
     d4 = body_dur * 0.22
 
-    print("⚡ Pre-trimming 4 fresh Coin Swap tutorial segments via FFmpeg...")
-    c_intro = build_official_logo_card(logo_dark_path, icon_path, intro_dur, is_outro=False)
+    print("⚡ Building animated official stream intro/outro + 4 crystal tutorial segments...")
+    c_intro = build_animated_stream_card(intro_webm, logo_dark, "intro", intro_dur, is_outro=False)
     c_step1_menu = prepare_crystal_phone_clip(screen_path, 1, 10.5, 22.5, raw_dur, crop_box, d1, intro_dur, broll_clip)
     c_step2_pair = prepare_crystal_phone_clip(screen_path, 2, 22.5, 36.5, raw_dur, crop_box, d2, intro_dur + d1, broll_clip)
     c_step2_fee = prepare_crystal_phone_clip(screen_path, 3, 36.5, 49.2, raw_dur, crop_box, d3, intro_dur + d1 + d2, broll_clip)
     c_step3_done = prepare_crystal_phone_clip(screen_path, 4, 49.5, 59.5, raw_dur, crop_box, d4, intro_dur + d1 + d2 + d3, broll_clip)
-    c_outro = build_official_logo_card(logo_dark_path, icon_path, outro_dur, is_outro=True)
+    c_outro = build_animated_stream_card(outro_webm, logo_dark, "outro", outro_dur, is_outro=True)
 
     base_timeline = concatenate_videoclips(
         [c_intro, c_step1_menu, c_step2_pair, c_step2_fee, c_step3_done, c_outro],
@@ -503,10 +514,10 @@ def build_masterpiece():
 
     layers = [base_timeline]
 
-    # Official FaucetPay Watermark throughout the tutorial walkthrough
-    if logo_dark_path:
+    # Official FaucetPay Watermark throughout tutorial
+    if logo_dark:
         layers.append(
-            ImageClip(logo_dark_path)
+            ImageClip(logo_dark)
             .resize(width=210)
             .set_start(intro_dur)
             .set_duration(body_dur)
@@ -517,10 +528,23 @@ def build_masterpiece():
     t_s2 = intro_dur + d1
     t_s3 = intro_dur + d1 + d2 + d3
 
-    # Top Tutorial Step Headers (with official FaucetPay icon if present in starter kit)
-    layers.append(make_step_header("STEP 1 OF 3 • OPEN COIN SWAP", "TAP MENU → SELECT COIN SWAP", t_s1, d1, icon_path))
-    layers.append(make_step_header("STEP 2 OF 3 • CHOOSE PAIR & RATE", "1 USDT → LTC • ONLY 0.03 USDT FEE", t_s2, d2 + d3, icon_path))
-    layers.append(make_step_header("STEP 3 OF 3 • INSTANT EXECUTION", "0.02079889 LTC CREDITED IMMEDIATELY", t_s3, d4, icon_path))
+    # Official Animated Stickers at key tutorial moments
+    spin_clip = make_greenscreen_sticker(sticker_spin, 126, t_s1 + 0.3, 2.5, (38, 232))
+    if spin_clip is not None:
+        layers.append(spin_clip)
+
+    claim_clip = make_greenscreen_sticker(sticker_claim, 210, t_s3 + 0.1, min(2.5, d4), (W - 238, 228))
+    if claim_clip is not None:
+        layers.append(claim_clip)
+
+    logo_pop_clip = load_alpha_webm_clip(sticker_logo_pop, "logopop", 210, 210, min(2.4, outro_dur))
+    if logo_pop_clip is not None:
+        layers.append(logo_pop_clip.set_start(total_dur - outro_dur + 0.1).set_position(((W - 210) // 2, 1210)))
+
+    # Top Tutorial Step Headers
+    layers.append(make_step_header("STEP 1 OF 3 • OPEN COIN SWAP", "TAP MENU → SELECT COIN SWAP", t_s1, d1))
+    layers.append(make_step_header("STEP 2 OF 3 • CHOOSE PAIR & RATE", "1 USDT → LTC • ONLY 0.03 USDT FEE", t_s2, d2 + d3))
+    layers.append(make_step_header("STEP 3 OF 3 • INSTANT EXECUTION", "0.02079889 LTC CREDITED IMMEDIATELY", t_s3, d4))
 
     # Bottom Step-by-Step Tutorial Captions
     captions = [
@@ -536,28 +560,26 @@ def build_masterpiece():
 
     final_video = CompositeVideoClip(layers, size=(W, H)).set_duration(total_dur)
 
-    # Audio Mix: Humanized Voice + Fintech Bed + All Starter Kit Sonic & SFX Assets
+    # Full Official Audio Mix: Rina's Voice + Fintech Bed + All 3 Starter Kit Audio Assets
     audio_tracks = []
-    audio_tracks.append(voice.set_start(0.35).volumex(1.25))
+    audio_tracks.append(voice.set_start(0.55).volumex(1.25))
     audio_tracks.append(build_smooth_fintech_bed(total_dur))
 
-    if kit["sonic"]:
-        sonic_file = kit["sonic"][0]
-        audio_tracks.append(AudioFileClip(sonic_file).set_start(0.0).volumex(0.48))
-        audio_tracks.append(AudioFileClip(sonic_file).set_start(max(0.0, total_dur - outro_dur)).volumex(0.42))
+    if sonic_mp3:
+        audio_tracks.append(AudioFileClip(sonic_mp3).set_start(0.0).volumex(0.50))
+        audio_tracks.append(AudioFileClip(sonic_mp3).set_start(max(0.0, total_dur - outro_dur)).volumex(0.42))
 
-    if kit["sfx_other"]:
-        sfx_step = kit["sfx_other"][0]
-        audio_tracks.append(AudioFileClip(sfx_step).set_start(t_s2).volumex(0.40))
+    if sfx_drop_mp3:
+        audio_tracks.append(AudioFileClip(sfx_drop_mp3).set_start(t_s2).volumex(0.45))
 
-    if kit["sfx_coin"]:
-        audio_tracks.append(AudioFileClip(kit["sfx_coin"][0]).set_start(t_s3 + 0.15).volumex(0.62))
+    if sfx_cascade_mp3:
+        audio_tracks.append(AudioFileClip(sfx_cascade_mp3).set_start(t_s3 + 0.15).volumex(0.62))
 
     final_audio = CompositeAudioClip(audio_tracks).set_duration(total_dur)
     final_video = final_video.set_audio(final_audio)
 
     output_name = "final_faucetpay_shorts.mp4"
-    print(f"🎬 Exporting {output_name} ({total_dur:.2f}s Tutorial Clip, 1080x1920, 12Mbps)...")
+    print(f"🎬 Exporting {output_name} ({total_dur:.2f}s Full-Starter-Kit Tutorial, 1080x1920, 12Mbps)...")
     final_video.write_videofile(
         output_name,
         fps=30,
